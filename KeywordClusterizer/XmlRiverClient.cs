@@ -38,7 +38,7 @@ namespace KeywordClusterizer
                 try
                 {
                     string encodedQuery = Uri.EscapeDataString(keyword);
-                    string url = $"https://xmlriver.com/search/xml?user={_settings.XmlriverUser}" +
+                    string url = $"http://xmlriver.com/yandex/xml?user={_settings.XmlriverUser}" +
                                  $"&key={_settings.XmlriverKey}" +
                                  $"&query={encodedQuery}";
 
@@ -123,6 +123,7 @@ namespace KeywordClusterizer
         /// <summary>
         /// Парсит XML-ответ от XmlRiver (формат Yandex XML),
         /// извлекает URL, домен, заголовок и сниппет.
+        /// Если в XML есть <error> — логирует текст ошибки.
         /// </summary>
         private void ParseXmlResponse(string xml, KeywordSearchResult result)
         {
@@ -132,6 +133,20 @@ namespace KeywordClusterizer
             try
             {
                 var doc = XDocument.Parse(xml);
+
+                // Проверяем наличие <error> в XML (Yandex XML возвращает ошибки
+                // с HTTP 200, но с <error code="..."> внутри)
+                var errorElement = doc.Descendants("error").FirstOrDefault();
+                if (errorElement != null)
+                {
+                    string errorCode = errorElement.Attribute("code")?.Value ?? "?";
+                    string errorText = errorElement.Value.Trim();
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"    [XmlRiver] Yandex XML error (code {errorCode}): \"{errorText}\"");
+                    Console.ResetColor();
+                    return; // ничего не парсим
+                }
+
                 var ns = doc.Root?.GetDefaultNamespace() ?? XNamespace.None;
 
                 // Ищем все <doc> внутри <group>
