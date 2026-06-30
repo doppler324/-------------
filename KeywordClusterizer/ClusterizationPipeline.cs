@@ -288,7 +288,7 @@ namespace KeywordClusterizer
                 return null;
 
             string instruction = string.Format(instructionTemplate,
-                $"size={keywords.Count}", $"maxSize={maxSize}");
+                keywords.Count, maxSize);
 
             string systemPrompt = BuildSystemPrompt(instruction);
             string userMessage = string.Join("\n", keywords);
@@ -477,7 +477,7 @@ namespace KeywordClusterizer
         /// </summary>
         private string BuildSystemPrompt(string instructionText, string serpContext = "")
         {
-            string systemPrompt = LoadInstruction("instructions/system_prompt.txt");
+            string systemPrompt = LoadInstruction("system_prompt.txt");
             string baseRules = _businessSettings.ToBaseRules();
 
             // Собираем полный системный промпт
