@@ -141,20 +141,39 @@ namespace KeywordClusterizer
                     continue;
                 }
 
+                // Детальный вывод попарных Jaccard (с именами ключей)
+                var pairLogs = new List<string>();
+                for (int i = 0; i < searchResults.Count; i++)
+                {
+                    for (int j = i + 1; j < searchResults.Count; j++)
+                    {
+                        double pairOverlap = ComputeUrlOverlap(
+                            searchResults[i].Urls, searchResults[j].Urls);
+                        pairLogs.Add(
+                            $"    \"{searchResults[i].Keyword}\" ↔ \"{searchResults[j].Keyword}\": " +
+                            $"J={pairOverlap:P0}");
+                    }
+                }
+
                 // Вычисляем средний попарный Jaccard overlap
                 double avgOverlap = ComputeAverageOverlap(searchResults);
 
                 if (avgOverlap >= _settings.MinOverlap)
                 {
                     Console.WriteLine($"overlap {avgOverlap:P0} — OK");
+                    // При OK всё равно показываем пары (для информации)
+                    foreach (var log in pairLogs)
+                        Console.WriteLine(log);
                     result[kvp.Key] = kvp.Value;
                 }
                 else
                 {
                     flaggedClusters++;
                     Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"overlap {avgOverlap:P0} — НИЗКИЙ!");
+                    Console.WriteLine($"overlap {avgOverlap:P0} — НИЗКИЙ! Пары:");
                     Console.ResetColor();
+                    foreach (var log in pairLogs)
+                        Console.WriteLine(log);
 
                     // Определяем, какие сэмплированные ключи "плохие"
                     var badKeys = IdentifyBadKeys(sampleKeys, _allSerpData);
