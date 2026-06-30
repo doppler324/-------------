@@ -101,6 +101,12 @@ namespace KeywordClusterizer
 
                         if (serp.TryGetProperty("enableFinalValidation", out var efv))
                             serpSettings.EnableFinalValidation = efv.GetBoolean();
+
+                        if (serp.TryGetProperty("maxConcurrency", out var mc))
+                            serpSettings.MaxConcurrency = mc.GetInt32();
+
+                        if (serp.TryGetProperty("enabledForDraft", out var efd))
+                            serpSettings.EnabledForDraft = efd.GetBoolean();
                     }
                 }
                 catch

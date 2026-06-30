@@ -55,5 +55,12 @@ namespace KeywordClusterizer.Models
     /// XmlRiver позволяет до 10 одновременных потоков.
     /// </summary>
     public int MaxConcurrency { get; set; } = 3;
+
+    /// <summary>
+    /// Включить SERP-контекст для шага Draft.
+    /// Перед первичной кластеризацией AI получит реальную выдачу Яндекса
+    /// для первого чанка ключей, что повышает точность группировки по интенту.
+    /// </summary>
+    public bool EnabledForDraft { get; set; } = false;
     }
 }

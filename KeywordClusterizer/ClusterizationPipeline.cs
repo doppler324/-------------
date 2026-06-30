@@ -70,7 +70,16 @@ namespace KeywordClusterizer
             string draftInstruction = string.Format(
                 LoadInstruction("instructions/step1_draft.txt"),
                 maxClusterSize);
-            string draftPrompt = BuildSystemPrompt(draftInstruction);
+
+            // SERP-контекст для Draft (если включён)
+            string serpContext = "";
+            if (_serpSettings.EnabledForDraft && _xmlRiverClient != null)
+            {
+                Console.WriteLine("  Сбор SERP-контекста для первого чанка...");
+                serpContext = await BuildSerpContextAsync(draftChunk);
+            }
+
+            string draftPrompt = BuildSystemPrompt(draftInstruction, serpContext);
 
             var clusters = await DeepSeekHelper.SendRequestAsync(
                 _client, draftPrompt, string.Join("\n", draftChunk), _deepSeekSettings);
@@ -354,9 +363,65 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
-        /// Собирает системный промпт: роль + формат JSON (system_prompt.txt) + бизнес-правила + инструкция шага.
+        /// Собирает SERP-контекст для первого чанка ключей: параллельно опрашивает XmlRiver
+        /// и формирует блок с доменами для вставки в промпт Draft.
         /// </summary>
-        private string BuildSystemPrompt(string instructionText)
+        private async Task<string> BuildSerpContextAsync(List<string> chunkKeys)
+        {
+            if (_xmlRiverClient == null || chunkKeys.Count == 0)
+                return "";
+
+            try
+            {
+                // Параллельный сбор SERP для всех ключей первого чанка
+                var serpData = await _xmlRiverClient.SearchBatchAsync(
+                    chunkKeys,
+                    _serpSettings.MaxConcurrency,
+                    _serpSettings.TopResultsCount);
+
+                // Формируем компактный блок: ключ → список доменов
+                var contextLines = new List<string>();
+                foreach (var kvp in serpData)
+                {
+                    if (kvp.Value.Results.Count == 0)
+                        continue;
+
+                    var domains = kvp.Value.Results
+                        .Select(r => r.Domain)
+                        .Where(d => !string.IsNullOrWhiteSpace(d))
+                        .Distinct()
+                        .ToList();
+
+                    if (domains.Count > 0)
+                    {
+                        string domainsStr = string.Join(", ", domains);
+                        contextLines.Add($"  \"{kvp.Key}\": {domainsStr}");
+                    }
+                }
+
+                if (contextLines.Count == 0)
+                {
+                    Console.WriteLine("  SERP-контекст пуст (нет данных по ключам).");
+                    return "";
+                }
+
+                string serpBlock = string.Join("\n", contextLines);
+                string template = LoadInstruction("instructions/serp_context_block.txt");
+                return string.Format(template, serpBlock);
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"  [ПРЕДУПРЕЖДЕНИЕ] Не удалось собрать SERP-контекст: {ex.GetType().Name}");
+                Console.ResetColor();
+                return "";
+            }
+        }
+
+        /// <summary>
+        /// Собирает системный промпт: роль + JSON-формат + бизнес-правила + инструкция шага + опциональный SERP-контекст.
+        /// </summary>
+        private string BuildSystemPrompt(string instructionText, string serpContext = "")
         {
             // Загружаем общий системный промпт (роль агента + формат ответа)
             string systemPrompt = LoadInstruction("system_prompt.txt");
@@ -364,7 +429,13 @@ namespace KeywordClusterizer
             // Бизнес-правила добавляются отдельным блоком
             string baseRules = _businessSettings.ToBaseRules();
 
-            return $"{systemPrompt}\n\n{baseRules}\n\n{instructionText}";
+            string result = $"{systemPrompt}\n\n{baseRules}\n\n{instructionText}";
+
+            // SERP-контекст добавляется в конец, если не пуст
+            if (!string.IsNullOrWhiteSpace(serpContext))
+                result += $"\n\n{serpContext}";
+
+            return result;
         }
     }
 }
