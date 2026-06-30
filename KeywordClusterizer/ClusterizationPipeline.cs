@@ -184,6 +184,25 @@ namespace KeywordClusterizer
             // Шаг 4: Iterative Refinement Loop (до 5 итераций)
             // ==========================================
             Console.WriteLine("\n--- Шаг 4: Iterative Refinement (до 5 итераций) ---");
+
+            // Сводка после рефакторинга
+            var clusterSizes = clusters
+                .Where(c => c.Key != UnclusteredKey)
+                .Select(c => c.Value.Count)
+                .OrderByDescending(s => s)
+                .ToList();
+
+            int oversizedCount = clusterSizes.Count(s => s > maxClusterSize);
+            Console.WriteLine($"  Кластеров: {clusters.Count} (без учёта {UnclusteredKey}: {clusterSizes.Count})");
+            Console.WriteLine($"  MaxClusterSize = {maxClusterSize}");
+            Console.WriteLine($"  Oversized: {oversizedCount}");
+
+            if (oversizedCount == 0)
+            {
+                Console.WriteLine($"  Размеры (макс/мин/сред): {clusterSizes.FirstOrDefault()}/" +
+                    $"{clusterSizes.LastOrDefault()}/{clusterSizes.Average():F1}");
+            }
+
             clusters = await RefinementLoopAsync(clusters, maxClusterSize);
 
             // ==========================================
@@ -229,11 +248,17 @@ namespace KeywordClusterizer
 
                 if (oversized.Count == 0)
                 {
-                    Console.WriteLine("  Все кластеры в рамках лимита.");
+                    Console.WriteLine($"  Все кластеры в рамках лимита (maxSize={maxSize}).");
                     return currentClusters;
                 }
 
-                Console.Write($"  Итерация {iteration + 1}/{maxIterations}: {oversized.Count} oversized кластеров... ");
+                // Выводим список oversized-кластеров с их размерами
+                var oversizedInfo = oversized
+                    .OrderByDescending(c => c.Value.Count)
+                    .Select(c => $"  • {c.Key} = {c.Value.Count} ключей");
+                Console.WriteLine($"  Oversized ({oversized.Count} шт.):\n{string.Join("\n", oversizedInfo)}");
+
+                Console.Write($"  Итерация {iteration + 1}/{maxIterations}: разбиваем {oversized.Count} кластеров... ");
 
                 string oversizedJson = JsonSerializer.Serialize(oversized);
                 string refinementInstruction = string.Format(
