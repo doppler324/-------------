@@ -86,6 +86,66 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
+        /// Отправляет запрос в DeepSeek и возвращает сырой ответ, десериализованный
+        /// в указанный тип T. Используется для кастомных JSON-форматов ответа,
+        /// отличных от DeepSeekResponse (например, RefinedCluster).
+        /// </summary>
+        public static async Task<T?> SendRawRequestAsync<T>(
+            HttpClient client, string systemPrompt, string userMessage,
+            DeepSeekSettings settings) where T : class
+        {
+            var requestBody = new
+            {
+                model = settings.Model,
+                messages = new[]
+                {
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userMessage }
+                },
+                temperature = settings.Temperature,
+                max_tokens = settings.MaxTokens,
+                top_p = settings.TopP
+            };
+
+            string jsonContent = JsonSerializer.Serialize(requestBody);
+            var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
+
+            try
+            {
+                var response = await client.PostAsync(
+                    "https://api.deepseek.com/chat/completions", httpContent);
+
+                string responseString = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"\n[ОШИБКА API] Код: {response.StatusCode}");
+                    Console.ResetColor();
+                    return null;
+                }
+
+                using JsonDocument doc = JsonDocument.Parse(responseString);
+                var root = doc.RootElement;
+                string rawAiResponse = root
+                    .GetProperty("choices")[0]
+                    .GetProperty("message")
+                    .GetProperty("content")
+                    .GetString() ?? "";
+
+                string cleanJson = CleanJsonMarkdown(rawAiResponse);
+                return JsonSerializer.Deserialize<T>(cleanJson);
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"\n[ОШИБКА] SendRawRequestAsync: {ex.GetType().Name}");
+                Console.ResetColor();
+                return null;
+            }
+        }
+
+        /// <summary>
         /// Преобразует DeepSeekResponse (clusters + unclustered) в словарь, ожидаемый пайплайном.
         /// Нераспределённые ключи помещаются в служебный кластер "Нераспределённые".
         /// </summary>

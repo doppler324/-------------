@@ -105,8 +105,17 @@ namespace KeywordClusterizer
                         if (serp.TryGetProperty("maxConcurrency", out var mc))
                             serpSettings.MaxConcurrency = mc.GetInt32();
 
-                        if (serp.TryGetProperty("enabledForDraft", out var efd))
-                            serpSettings.EnabledForDraft = efd.GetBoolean();
+                        if (serp.TryGetProperty("enableSerpFirst", out var esf))
+                            serpSettings.EnableSerpFirst = esf.GetBoolean();
+
+                        if (serp.TryGetProperty("overlapThreshold", out var ot))
+                            serpSettings.OverlapThreshold = ot.GetInt32();
+
+                        if (serp.TryGetProperty("enableCache", out var ec))
+                            serpSettings.EnableCache = ec.GetBoolean();
+
+                        if (serp.TryGetProperty("cachePath", out var cp))
+                            serpSettings.CachePath = cp.GetString() ?? serpSettings.CachePath;
                     }
                 }
                 catch

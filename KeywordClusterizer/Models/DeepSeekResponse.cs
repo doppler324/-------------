@@ -30,6 +30,10 @@ namespace KeywordClusterizer.Models
         [JsonPropertyName("intent")]
         public string Intent { get; set; } = "";
 
+        /// <summary>Тип страницы: категория / карточка товара / статья в блог / услуга.</summary>
+        [JsonPropertyName("page_type")]
+        public string PageType { get; set; } = "";
+
         /// <summary>Ключевые слова в этом кластере.</summary>
         [JsonPropertyName("keywords")]
         public List<string> Keywords { get; set; } = new();
