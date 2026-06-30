@@ -21,3 +21,6 @@ Thumbs.db
 
 # Config with secrets
 KeywordClusterizer/settings.json
+
+# SERP cache (auto-generated, changes every run)
+KeywordClusterizer/serp_cache.json
