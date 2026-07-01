@@ -11,11 +11,13 @@ using KeywordClusterizer.Services;
 namespace KeywordClusterizer
 {
     /// <summary>
-    /// Управляет 4-фазным SERP-first пайплайном кластеризации:
+    /// Управляет 5-фазным SERP-first пайплайном кластеризации:
     /// 1. Сбор SERP (XmlRiver + кэш) для ВСЕХ ключей.
     /// 2. Граф интентов (Connected Components).
-    /// 3. AI-именование per-cluster (deepseek-reasoner).
-    /// 4. Дробление oversized (deepseek-chat).
+    /// 2.5. Rescue Pass — прикрепление сирот к ближайшим кластерам.
+    /// 3a. Рекурсивное графовое дробление oversized (Hard Stop 6) + орфаны→синглтоны.
+    /// 3b. AI Semantic Split (deepseek-chat) для hard-stopped кластеров.
+    /// 4. AI-именование per-cluster (deepseek-reasoner).
     ///
     /// Если SERP-first выключен (EnableSerpFirst = false),
     /// использует старый AI-first пайплайн.
@@ -121,12 +123,18 @@ namespace KeywordClusterizer
             }
 
             // ==========================================
-            // Фаза 3: Рекурсивное дробление oversized (графовый split)
+            // Фаза 2.5: Rescue Pass — прикрепление сирот к ближайшим кластерам
             // ==========================================
-            Console.WriteLine($"\n--- Фаза 3: Рекурсивное дробление oversized ---");
+            Console.WriteLine($"\n--- Фаза 2.5: Rescue Pass ---");
+            RescuePass(serpClusters, serpUnclustered, serpData);
+
+            // ==========================================
+            // Фаза 3a: Рекурсивное графовое дробление oversized (с Hard Stop 6)
+            // Орфаны при каждом пороге → singleton-кластеры
+            // ==========================================
+            Console.WriteLine($"\n--- Фаза 3a: Рекурсивное графовое дробление (Hard Stop 6) ---");
 
             var splitClusters = new List<List<string>>();
-            var splitUnclustered = new HashSet<string>(serpUnclustered, StringComparer.OrdinalIgnoreCase);
 
             foreach (var cluster in serpClusters)
             {
@@ -137,16 +145,69 @@ namespace KeywordClusterizer
                 else
                 {
                     Console.WriteLine($"  Кластер {cluster.Count} ключей > max ({maxClusterSize}) — дробление...");
-                    var (subClusters, subUnclustered) = SplitOversizedRecursive(
+                    var (subClusters, _) = SplitOversizedRecursive(
                         cluster, serpData, maxClusterSize, _serpSettings.OverlapThreshold);
 
                     splitClusters.AddRange(subClusters);
-                    foreach (var key in subUnclustered)
-                        splitUnclustered.Add(key);
                 }
             }
 
-            Console.WriteLine($"  После дробления: {splitClusters.Count} кластеров, {splitUnclustered.Count} нераспределённых.");
+            Console.WriteLine($"  После графового дробления: {splitClusters.Count} кластеров.");
+
+            // ==========================================
+            // Фаза 3b: AI Semantic Split (deepseek-chat) для hard-stopped кластеров
+            // Кластеры, оставшиеся oversized после Hard Stop 6 — широкий интент,
+            // AI разобьёт по логическим признакам (не по SERP).
+            // ==========================================
+            Console.WriteLine($"\n--- Фаза 3b: AI Semantic Split для hard-stopped кластеров ---");
+
+            var finalClusters = new List<List<string>>();
+            int hardStoppedCount = splitClusters.Count(c => c.Count > maxClusterSize);
+
+            if (hardStoppedCount > 0)
+                Console.WriteLine($"  Hard-stopped: {hardStoppedCount} кластеров — отправляю в deepseek-chat...");
+
+            foreach (var cluster in splitClusters)
+            {
+                if (cluster.Count <= maxClusterSize)
+                {
+                    finalClusters.Add(cluster);
+                }
+                else
+                {
+                    Console.Write($"  Кластер {cluster.Count} ключей → AI semantic split... ");
+                    var aiSplit = await SplitClusterAsync(cluster, maxClusterSize);
+
+                    if (aiSplit != null && aiSplit.Count > 0)
+                    {
+                        var allSplitKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var kvp in aiSplit)
+                        {
+                            finalClusters.Add(kvp.Value);
+                            foreach (var k in kvp.Value)
+                                allSplitKeys.Add(k);
+                        }
+
+                        // Потерянные AI ключи — singleton-кластеры
+                        foreach (var key in cluster)
+                        {
+                            if (!allSplitKeys.Contains(key))
+                                finalClusters.Add(new List<string> { key });
+                        }
+
+                        Console.WriteLine($"→ {aiSplit.Count} подкластеров.");
+                    }
+                    else
+                    {
+                        // Fallback — оставляем как singleton
+                        Console.WriteLine("(ошибка AI, оставлен как singletons)");
+                        foreach (var key in cluster)
+                            finalClusters.Add(new List<string> { key });
+                    }
+                }
+            }
+
+            Console.WriteLine($"  После AI semantic split: {finalClusters.Count} кластеров.");
 
             // ==========================================
             // Фаза 4: AI-именование per-cluster (deepseek-reasoner)
@@ -155,12 +216,12 @@ namespace KeywordClusterizer
 
             int clusterIndex = 0;
             var namedClusters = new Dictionary<string, List<string>>();
-            var allUnclustered = new HashSet<string>(splitUnclustered, StringComparer.OrdinalIgnoreCase);
+            var allUnclustered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var cluster in splitClusters)
+            foreach (var cluster in finalClusters)
             {
                 clusterIndex++;
-                Console.Write($"  Кластер {clusterIndex}/{splitClusters.Count}: {cluster.Count} ключей... ");
+                Console.Write($"  Кластер {clusterIndex}/{finalClusters.Count}: {cluster.Count} ключей... ");
 
                 var refined = await RefineClusterAsync(cluster);
 
@@ -208,6 +269,67 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
+        /// Rescue Pass: прикрепляет unclustered ключи к ближайшему кластеру по пересечению URL.
+        /// Даже 1 общий URL — достаточный сигнал для прикрепления.
+        /// </summary>
+        private void RescuePass(
+            List<List<string>> clusters,
+            List<string> unclustered,
+            Dictionary<string, KeywordSearchResult> serpData)
+        {
+            if (unclustered.Count == 0) return;
+
+            Console.WriteLine($"  [Rescue] Спасение {unclustered.Count} сирот...");
+            int rescued = 0;
+            var remaining = new List<string>();
+
+            foreach (var orphan in unclustered)
+            {
+                if (!serpData.TryGetValue(orphan, out var sr) || sr.Urls.Count == 0)
+                {
+                    remaining.Add(orphan);
+                    continue;
+                }
+
+                var orphanUrls = new HashSet<string>(sr.Urls, StringComparer.OrdinalIgnoreCase);
+                (int overlap, List<string> cluster)? best = null;
+
+                // Ищем кластер с максимальным пересечением URL
+                foreach (var cluster in clusters)
+                {
+                    foreach (var key in cluster)
+                    {
+                        if (!serpData.TryGetValue(key, out var csr)) continue;
+                        int overlap = csr.Urls.Count(u => orphanUrls.Contains(u));
+
+                        if (overlap >= 1 && (best == null || overlap > best.Value.overlap))
+                            best = (overlap, cluster);
+
+                        // Достигнут порог кластеризации — не ищем дальше
+                        if (overlap >= _serpSettings.OverlapThreshold)
+                            goto Attach;
+                    }
+                }
+
+                if (best != null)
+                {
+                    best.Value.cluster.Add(orphan);
+                    rescued++;
+                }
+                else
+                {
+                    remaining.Add(orphan);
+                }
+
+                Attach:;
+            }
+
+            Console.WriteLine($"  [Rescue] Спасено: {rescued}, не удалось: {remaining.Count}");
+            unclustered.Clear();
+            unclustered.AddRange(remaining);
+        }
+
+        /// <summary>
         /// Рекурсивно дробит oversized-кластер через граф кластеризацию с повышенным порогом.
         /// Если кластер > maxSize — применяет SerpGraphClusterizer с порогом currentThreshold + 1.
         /// Рекурсивно повторяет для каждого подкластера, пока все не станут ≤ maxSize
@@ -219,7 +341,10 @@ namespace KeywordClusterizer
             int maxSize,
             int currentThreshold)
         {
-            if (cluster.Count <= maxSize || currentThreshold > _serpSettings.TopResultsCount)
+            // Hard Stop: если порог достиг 6, а кластер всё ещё oversized —
+            // это широкий интент, граф его не разобьёт (6 общих URL = одна посадочная).
+            if (cluster.Count <= maxSize || currentThreshold > _serpSettings.TopResultsCount
+                || (currentThreshold >= 6 && cluster.Count > maxSize))
             {
                 return (new List<List<string>> { cluster }, new List<string>());
             }
@@ -240,27 +365,29 @@ namespace KeywordClusterizer
             var subGraph = new SerpGraphClusterizer(nextThreshold, _serpSettings.TopResultsCount);
             var (subClusters, subUnclustered) = subGraph.Clusterize(subSerpData);
 
+            // Орфаны (узлы с 0 связей при этом пороге) — синглтоны.
+            // Они формировали кластер на пороге N-1, не выкидываем их.
+            subClusters.AddRange(subUnclustered.Select(k => new List<string> { k }));
+            subUnclustered.Clear();
+
             if (subClusters.Count <= 1 && subClusters.Sum(c => c.Count) == cluster.Count)
             {
                 // Повышение порога не помогло разбить — оставляем как есть
-                return (new List<List<string>> { cluster }, subUnclustered);
+                return (new List<List<string>> { cluster }, new List<string>());
             }
 
             // Рекурсивно дробим каждый подкластер
             var result = new List<List<string>>();
-            var allUnclustered = new HashSet<string>(subUnclustered, StringComparer.OrdinalIgnoreCase);
 
             foreach (var subCluster in subClusters)
             {
-                var (furtherClusters, furtherUnclustered) = SplitOversizedRecursive(
+                var (furtherClusters, _) = SplitOversizedRecursive(
                     subCluster, serpData, maxSize, nextThreshold);
 
                 result.AddRange(furtherClusters);
-                foreach (var key in furtherUnclustered)
-                    allUnclustered.Add(key);
             }
 
-            return (result, allUnclustered.ToList());
+            return (result, new List<string>());
         }
 
         /// <summary>

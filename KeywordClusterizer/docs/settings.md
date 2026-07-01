@@ -59,20 +59,25 @@ API-ключ DeepSeek для доступа к нейросети.
 
 ## Пайплайн кластеризации
 
-### SERP-first (новый, 4 фазы)
+### SERP-first (новый, 5 фаз)
 
 ```
-Phase 1: SERP collection    → XmlRiver, параллельный сбор выдачи для ВСЕХ ключей (кэшируется)
-Phase 2: Graph clustering   → Connected Components (BFS), граф интентов на основе пересечения URL
-Phase 3: Recursive split    → Графовый split oversized-кластеров с повышением порога (4→5→6→...)
-Phase 4: AI naming          → deepseek-reasoner, именование + чистка per-cluster (≤ maxClusterSize)
+Phase 1:  SERP collection     → XmlRiver, параллельный сбор выдачи для ВСЕХ ключей (кэшируется)
+Phase 2:  Graph clustering    → Connected Components (BFS), граф интентов на основе пересечения URL
+Phase 2.5 Rescue Pass         → Прикрепление unclustered к ближайшему кластеру (≥1 общий URL)
+Phase 3a: Recursive split     → Графовый split oversized с Hard Stop 6; орфаны → singleton-кластеры
+Phase 3b: AI Semantic Split   → deepseek-chat для hard-stopped кластеров (threshold≥6 && count>maxSize)
+Phase 4:  AI naming           → deepseek-reasoner, именование + чистка per-cluster (≤ maxClusterSize)
 ```
 
 **Ключевые особенности:**
 - Все 1200+ ключей обрабатываются сразу (без чанков по 100)
 - Математически строгая кластеризация (пересечение URL = интент)
-- Рекурсивный графовый split без затрат на AI
-- Каждый кластер ≤ `maxClusterSize` перед отправкой AI
+- **Hard Stop 6**: граф не поднимает порог выше 6 — железобетонный сигнал единого интента
+- **Rescue Pass**: сироты с уникальной выдачей прикрепляются к ближайшему кластеру (даже 1 общий URL)
+- **Orphan→Singleton**: узлы с 0 связей при пороге N становятся кластерами из 1 элемента
+- **AI Semantic Split**: широкие интенты (threshold≥6, count>maxSize) разбиваются deepseek-chat по логике, не по SERP
+- Каждый кластер ≤ `maxClusterSize` перед отправкой deepseek-reasoner
 - 100% ключей сохраняются (потерянные AI → нераспределённые)
 
 ### AI-first (старый, 6 шагов)
