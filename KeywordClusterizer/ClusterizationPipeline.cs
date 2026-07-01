@@ -121,24 +121,58 @@ namespace KeywordClusterizer
             }
 
             // ==========================================
-            // Фаза 3: AI-именование per-cluster (deepseek-reasoner)
+            // Фаза 3: Рекурсивное дробление oversized (графовый split)
             // ==========================================
-            Console.WriteLine($"\n--- Фаза 3: AI-именование кластеров ---");
+            Console.WriteLine($"\n--- Фаза 3: Рекурсивное дробление oversized ---");
 
-            int clusterIndex = 0;
-            var namedClusters = new Dictionary<string, List<string>>();
-            var allUnclustered = new HashSet<string>(serpUnclustered, StringComparer.OrdinalIgnoreCase);
+            var splitClusters = new List<List<string>>();
+            var splitUnclustered = new HashSet<string>(serpUnclustered, StringComparer.OrdinalIgnoreCase);
 
             foreach (var cluster in serpClusters)
             {
+                if (cluster.Count <= maxClusterSize)
+                {
+                    splitClusters.Add(cluster);
+                }
+                else
+                {
+                    Console.WriteLine($"  Кластер {cluster.Count} ключей > max ({maxClusterSize}) — дробление...");
+                    var (subClusters, subUnclustered) = SplitOversizedRecursive(
+                        cluster, serpData, maxClusterSize, _serpSettings.OverlapThreshold);
+
+                    splitClusters.AddRange(subClusters);
+                    foreach (var key in subUnclustered)
+                        splitUnclustered.Add(key);
+                }
+            }
+
+            Console.WriteLine($"  После дробления: {splitClusters.Count} кластеров, {splitUnclustered.Count} нераспределённых.");
+
+            // ==========================================
+            // Фаза 4: AI-именование per-cluster (deepseek-reasoner)
+            // ==========================================
+            Console.WriteLine($"\n--- Фаза 4: AI-именование кластеров ---");
+
+            int clusterIndex = 0;
+            var namedClusters = new Dictionary<string, List<string>>();
+            var allUnclustered = new HashSet<string>(splitUnclustered, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var cluster in splitClusters)
+            {
                 clusterIndex++;
-                Console.Write($"  Кластер {clusterIndex}/{serpClusters.Count}: {cluster.Count} ключей... ");
+                Console.Write($"  Кластер {clusterIndex}/{splitClusters.Count}: {cluster.Count} ключей... ");
 
                 var refined = await RefineClusterAsync(cluster);
 
                 if (refined != null)
                 {
                     namedClusters[refined.ClusterName] = refined.Keywords;
+
+                    // AI мог выкинуть часть ключей — возвращаем их в unclustered
+                    var lostKeys = cluster.Where(k =>
+                        !refined.Keywords.Contains(k, StringComparer.OrdinalIgnoreCase));
+                    foreach (var key in lostKeys)
+                        allUnclustered.Add(key);
 
                     if (refined.Unclustered.Count > 0)
                     {
@@ -150,7 +184,6 @@ namespace KeywordClusterizer
                 }
                 else
                 {
-                    // Если AI не смог обработать — используем оригинальный список
                     string fallbackName = cluster.Count > 1
                         ? cluster[0] + " и др."
                         : cluster[0];
@@ -167,13 +200,6 @@ namespace KeywordClusterizer
                 Console.WriteLine($"  Нераспределённых ключей: {allUnclustered.Count}");
             }
 
-            // ==========================================
-            // Фаза 4: Дробление oversized (deepseek-chat)
-            // ==========================================
-            Console.WriteLine($"\n--- Фаза 4: Дробление oversized ---");
-
-            namedClusters = await SplitOversizedClustersAsync(namedClusters, maxClusterSize);
-
             // Итог
             int totalKeys = namedClusters.Sum(c => c.Value.Count);
             Console.WriteLine($"\nИтого: {namedClusters.Count} кластеров, {totalKeys} ключей.");
@@ -182,7 +208,64 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
+        /// Рекурсивно дробит oversized-кластер через граф кластеризацию с повышенным порогом.
+        /// Если кластер > maxSize — применяет SerpGraphClusterizer с порогом currentThreshold + 1.
+        /// Рекурсивно повторяет для каждого подкластера, пока все не станут ≤ maxSize
+        /// или порог не превысит TopResultsCount (дальше дробить некуда).
+        /// </summary>
+        private (List<List<string>> SubClusters, List<string> Unclustered) SplitOversizedRecursive(
+            List<string> cluster,
+            Dictionary<string, KeywordSearchResult> serpData,
+            int maxSize,
+            int currentThreshold)
+        {
+            if (cluster.Count <= maxSize || currentThreshold > _serpSettings.TopResultsCount)
+            {
+                return (new List<List<string>> { cluster }, new List<string>());
+            }
+
+            int nextThreshold = currentThreshold + 1;
+            Console.WriteLine($"    Split с порогом {nextThreshold}...");
+
+            // Создаём подграф только для ключей этого кластера
+            var subSerpData = new Dictionary<string, KeywordSearchResult>(
+                StringComparer.OrdinalIgnoreCase);
+
+            foreach (var key in cluster)
+            {
+                if (serpData.TryGetValue(key, out var sr))
+                    subSerpData[key] = sr;
+            }
+
+            var subGraph = new SerpGraphClusterizer(nextThreshold, _serpSettings.TopResultsCount);
+            var (subClusters, subUnclustered) = subGraph.Clusterize(subSerpData);
+
+            if (subClusters.Count <= 1 && subClusters.Sum(c => c.Count) == cluster.Count)
+            {
+                // Повышение порога не помогло разбить — оставляем как есть
+                return (new List<List<string>> { cluster }, subUnclustered);
+            }
+
+            // Рекурсивно дробим каждый подкластер
+            var result = new List<List<string>>();
+            var allUnclustered = new HashSet<string>(subUnclustered, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var subCluster in subClusters)
+            {
+                var (furtherClusters, furtherUnclustered) = SplitOversizedRecursive(
+                    subCluster, serpData, maxSize, nextThreshold);
+
+                result.AddRange(furtherClusters);
+                foreach (var key in furtherUnclustered)
+                    allUnclustered.Add(key);
+            }
+
+            return (result, allUnclustered.ToList());
+        }
+
+        /// <summary>
         /// Отправляет один SERP-кластер в deepseek-reasoner для именования и чистки.
+        /// При пустом ответе делает до 3 повторных попыток с паузой 5 секунд.
         /// </summary>
         private async Task<RefinedCluster?> RefineClusterAsync(List<string> keywords)
         {
@@ -193,10 +276,12 @@ namespace KeywordClusterizer
                 return null;
             }
 
-            string systemPrompt = BuildSystemPrompt(instruction);
+            // Не используем глобальный system_prompt.txt — он навязывает структуру
+            // { clusters, unclustered }, а инструкция serp_cluster_refine.txt требует
+            // { cluster_name, page_type, keywords, unclustered }
+            string systemPrompt = BuildSystemPrompt(instruction, includeSystemPrompt: false);
             string userMessage = string.Join("\n", keywords);
 
-            // Используем deepseek-reasoner для аналитической работы
             var reasonerSettings = new DeepSeekSettings
             {
                 ApiKey = _deepSeekSettings.ApiKey,
@@ -208,29 +293,71 @@ namespace KeywordClusterizer
                 TopP = _deepSeekSettings.TopP
             };
 
-            try
+            const int maxRetries = 3;
+            const int retryDelayMs = 5000;
+
+            for (int attempt = 1; attempt <= maxRetries; attempt++)
             {
-                var response = await DeepSeekHelper.SendRawRequestAsync<RefinedCluster>(
-                    _client, systemPrompt, userMessage, reasonerSettings);
-
-                if (response == null)
-                    return null;
-
-                return new RefinedCluster
+                try
                 {
-                    ClusterName = response.ClusterName,
-                    PageType = response.PageType,
-                    Keywords = response.Keywords ?? keywords,
-                    Unclustered = response.Unclustered ?? new List<string>()
-                };
+                    var response = await DeepSeekHelper.SendRawRequestAsync<RefinedCluster>(
+                        _client, systemPrompt, userMessage, reasonerSettings);
+
+                    if (response == null)
+                    {
+                        if (attempt < maxRetries)
+                        {
+                            Console.Write($" (попытка {attempt}/{maxRetries}, повтор через {retryDelayMs / 1000}с...)");
+                            await Task.Delay(retryDelayMs);
+                            continue;
+                        }
+                        return null;
+                    }
+
+                    // Проверяем, что AI вернул осмысленный ответ
+                    bool hasContent = !string.IsNullOrWhiteSpace(response.ClusterName) &&
+                                      response.Keywords != null &&
+                                      response.Keywords.Count > 0;
+
+                    if (hasContent)
+                    {
+                        return new RefinedCluster
+                        {
+                            ClusterName = response.ClusterName,
+                            PageType = response.PageType,
+                            Keywords = response.Keywords ?? new List<string>(),
+                            Unclustered = response.Unclustered ?? new List<string>()
+                        };
+                    }
+
+                    // Пустой ответ — повторяем
+                    if (attempt < maxRetries)
+                    {
+                        Console.Write($" (пусто, попытка {attempt}/{maxRetries}, повтор через {retryDelayMs / 1000}с...)");
+                        await Task.Delay(retryDelayMs);
+                    }
+                    else
+                    {
+                        Console.Write($" (пусто после {maxRetries} попыток)");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    if (attempt < maxRetries)
+                    {
+                        Console.Write($" ({ex.GetType().Name}, попытка {attempt}/{maxRetries}, повтор через {retryDelayMs / 1000}с...)");
+                        await Task.Delay(retryDelayMs);
+                    }
+                    else
+                    {
+                        Console.Write($" ({ex.GetType().Name} после {maxRetries} попыток)");
+                        Console.ResetColor();
+                        return null;
+                    }
+                }
             }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.Write($"ошибка ({ex.GetType().Name})");
-                Console.ResetColor();
-                return null;
-            }
+
+            return null;
         }
 
         /// <summary>
@@ -474,19 +601,37 @@ namespace KeywordClusterizer
 
         /// <summary>
         /// Строит системный промпт: глобальная роль + базовые правила + инструкция шага + SERP-контекст.
+        /// <summary>
+        /// Собирает системный промпт из глобального system_prompt.txt, baseRules и переданной инструкции.
         /// </summary>
-        private string BuildSystemPrompt(string instructionText, string serpContext = "")
+        /// <param name="instructionText">Текст инструкции (из файла instructions/*.txt).</param>
+        /// <param name="serpContext">Опциональный SERP-контекст для первого чанка.</param>
+        /// <param name="includeSystemPrompt">
+        /// Если false — исключает глобальный system_prompt.txt (нужно, когда инструкция
+        /// определяет свою структуру JSON, отличную от { clusters, unclustered }).
+        /// </param>
+        private string BuildSystemPrompt(string instructionText, string serpContext = "", bool includeSystemPrompt = true)
         {
-            string systemPrompt = LoadInstruction("system_prompt.txt");
-            string baseRules = _businessSettings.ToBaseRules();
+            var parts = new List<string>();
 
-            // Собираем полный системный промпт
-            var parts = new List<string> { systemPrompt, baseRules, instructionText };
+            if (includeSystemPrompt)
+            {
+                string systemPrompt = LoadInstruction("system_prompt.txt");
+                if (!string.IsNullOrWhiteSpace(systemPrompt))
+                    parts.Add(systemPrompt);
+            }
+
+            string baseRules = _businessSettings.ToBaseRules();
+            if (!string.IsNullOrWhiteSpace(baseRules))
+                parts.Add(baseRules);
+
+            if (!string.IsNullOrWhiteSpace(instructionText))
+                parts.Add(instructionText);
 
             if (!string.IsNullOrWhiteSpace(serpContext))
                 parts.Add(serpContext);
 
-            return string.Join("\n\n", parts.Where(p => !string.IsNullOrWhiteSpace(p)));
+            return string.Join("\n\n", parts);
         }
 
         /// <summary>
