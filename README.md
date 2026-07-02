@@ -12,7 +12,7 @@
 ## Быстрый старт
 
 ```cmd
-git clone <URL_репозитория> кластеризатор
+git clone https://github.com/doppler324/------------- кластеризатор
 cd кластеризатор\KeywordClusterizer
 ```
 
