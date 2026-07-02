@@ -96,10 +96,19 @@ dotnet run
 4. Загрузить `keywords.txt`
 5. `dotnet run`
 
-### Single-file publish (без установки .NET)
+### Single-file .exe (без установки .NET)
 
 ```cmd
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 ```
 
-Будет лежать в `bin\Release\net9.0\win-x64\publish\KeywordClusterizer.exe`.
+Готовый `KeywordClusterizer.exe` (~71 МБ) лежит в папке `publish/`. На другом компьютере достаточно скопировать:
+- `publish/KeywordClusterizer.exe`
+- `settings.json` (с API-ключами)
+- `keywords.txt` (список запросов)
+- `instructions/` (папка с промптами)
+
+Запуск:
+```cmd
+KeywordClusterizer.exe
+```
