@@ -102,13 +102,17 @@ dotnet run
 dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish
 ```
 
-Готовый `KeywordClusterizer.exe` (~71 МБ) лежит в папке `publish/`. На другом компьютере достаточно скопировать:
-- `publish/KeywordClusterizer.exe`
-- `settings.json` (с API-ключами)
-- `keywords.txt` (список запросов)
-- `instructions/` (папка с промптами)
+В папке `publish/` лежит всё необходимое:
+```
+publish/
+├── KeywordClusterizer.exe   ← сам exe (~71 МБ)
+├── settings.json            ← сюда вписать API-ключи
+├── keywords.txt             ← сюда вписать ключевые запросы
+└── instructions/            ← промпты для AI
+```
 
 Запуск:
 ```cmd
+cd publish
 KeywordClusterizer.exe
 ```

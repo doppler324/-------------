@@ -7,4 +7,11 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!-- Копировать инструкции, настройки и шаблон keywords.txt рядом с .exe -->
+  <ItemGroup>
+    <Content Include="instructions/**/*" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="settings.json" CopyToPublishDirectory="PreserveNewest" />
+    <Content Include="keywords.txt" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>
