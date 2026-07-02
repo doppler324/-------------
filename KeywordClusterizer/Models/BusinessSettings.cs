@@ -17,14 +17,6 @@ namespace KeywordClusterizer.Models
         /// <summary>Правило гранулярности (например, "кластеры от 2 до 10 ключей").</summary>
         public string GranularityRule { get; set; } = "";
 
-        /// <summary>Количество ключей в одном чанке для Draft и Mapping.</summary>
-        public int ChunkSize { get; set; } = 100;
-
-        /// <summary>
-        /// Включает программный Hard Cap (принудительная нарезка кластеров по maxClusterSize).
-        /// Если false — кластеры могут быть больше лимита (полезно при SERP-валидации).
-        /// По умолчанию: true.
-        /// </summary>
         /// <summary>
         /// Собирает базовые правила в строку для подстановки в системный промпт.
         /// </summary>

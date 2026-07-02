@@ -16,9 +16,8 @@ namespace KeywordClusterizer.Models
 
         /// <summary>
         /// Включить SERP-first кластеризацию (через граф интентов).
-        /// Если false — используется старый AI-first пайплайн.
         /// </summary>
-        public bool EnableSerpFirst { get; set; } = false;
+        public bool EnableSerpFirst { get; set; } = true;
 
         /// <summary>
         /// Порог пересечения URL в топе выдачи (absolute count).
@@ -60,34 +59,5 @@ namespace KeywordClusterizer.Models
         /// XmlRiver позволяет до 10 одновременных потоков.
         /// </summary>
         public int MaxConcurrency { get; set; } = 10;
-
-        // ═══════════════════════════════════════════
-        // Ниже — поля, оставленные для обратной совместимости
-        // (используются только при EnableSerpFirst = false)
-        // ═══════════════════════════════════════════
-
-        /// <summary>Включить ли финальную SERP-проверку кластеров (старый режим).</summary>
-        public bool EnableValidation { get; set; } = false;
-
-        /// <summary>
-        /// Минимальный Jaccard overlap (0..1) для признания интента совпадающим.
-        /// Только для старого режима.
-        /// </summary>
-        public double MinOverlap { get; set; } = 0.4;
-
-        /// <summary>
-        /// Сколько ключей из кластера опрашивать через XmlRiver (старый режим).
-        /// </summary>
-        public int SampleSize { get; set; } = 3;
-
-        /// <summary>
-        /// Старая финальная проверка overlap.
-        /// </summary>
-        public bool EnableFinalValidation { get; set; } = true;
-
-        /// <summary>
-        /// SERP-контекст для Draft (старый режим).
-        /// </summary>
-        public bool EnabledForDraft { get; set; } = false;
     }
 }

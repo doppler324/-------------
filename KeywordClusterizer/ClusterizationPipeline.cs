@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
-using System.Text.Json;
 using System.Threading.Tasks;
 using KeywordClusterizer.Models;
 using KeywordClusterizer.Services;
@@ -11,12 +10,11 @@ using KeywordClusterizer.Services;
 namespace KeywordClusterizer
 {
     /// <summary>
-    /// Управляет 5-фазным SERP-first пайплайном кластеризации:
+    /// Управляет SERP-first пайплайном кластеризации:
     /// 1. Сбор SERP (XmlRiver + кэш) для ВСЕХ ключей.
     /// 2. Граф интентов (Connected Components).
     /// 2.5. Rescue Pass — прикрепление сирот к ближайшим кластерам.
-    /// 3a. Рекурсивное графовое дробление oversized (Hard Stop 6) + орфаны→синглтоны.
-    /// 3b. AI Semantic Split (deepseek-chat) для hard-stopped кластеров.
+    /// 3. Semantic Map-Reduce (тегизация oversized-кластеров через deepseek-chat).
     /// 4. AI-именование per-cluster (deepseek-reasoner).
     ///
     /// Если SERP-first выключен (EnableSerpFirst = false),
@@ -30,8 +28,6 @@ namespace KeywordClusterizer
         private readonly XmlRiverSettings _serpSettings;
         private readonly XmlRiverClient? _xmlRiverClient;
         private readonly SerpCacheService? _cacheService;
-        private readonly SerpClusterValidator? _serpValidator;
-
         private const string UnclusteredKey = "Нераспределённые";
 
         public ClusterizationPipeline(
@@ -54,7 +50,6 @@ namespace KeywordClusterizer
                     _cacheService = new SerpCacheService(_serpSettings.CachePath);
 
                 _xmlRiverClient = new XmlRiverClient(client, _serpSettings, _cacheService);
-                _serpValidator = new SerpClusterValidator(_xmlRiverClient, _serpSettings);
             }
         }
 
@@ -63,10 +58,15 @@ namespace KeywordClusterizer
         /// </summary>
         public async Task<Dictionary<string, List<string>>?> RunAsync(List<string> keywords)
         {
-            if (_serpSettings.EnableSerpFirst && _xmlRiverClient != null)
-                return await RunSerpFirstAsync(keywords);
-            else
-                return await RunAiFirstAsync(keywords);
+            // SERP-first пайплайн (AI-first удалён)
+            if (_xmlRiverClient == null)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("[ОШИБКА] XmlRiver не настроен (нет User/Key).");
+                Console.ResetColor();
+                return null;
+            }
+            return await RunSerpFirstAsync(keywords);
         }
 
         // ═══════════════════════════════════════════════════════
@@ -129,85 +129,102 @@ namespace KeywordClusterizer
             RescuePass(serpClusters, serpUnclustered, serpData);
 
             // ==========================================
-            // Фаза 3a: Рекурсивное графовое дробление oversized (с Hard Stop 6)
-            // Орфаны при каждом пороге → singleton-кластеры
+            // Фаза 3: Semantic Map-Reduce для oversized-кластеров
+            // Кластеры > maxClusterSize — это широкие интенты, которые граф не может разбить.
+            // Используем AI: чанки по 100 ключей → тегизация → GroupBy по тегу.
             // ==========================================
-            Console.WriteLine($"\n--- Фаза 3a: Рекурсивное графовое дробление (Hard Stop 6) ---");
+            Console.WriteLine($"\n--- Фаза 3: Semantic Map-Reduce (тегизация) ---");
 
-            var splitClusters = new List<List<string>>();
+            var finalClusters = new List<List<string>>();
+            int oversizedCount = serpClusters.Count(c => c.Count > maxClusterSize);
+            var processedOversizedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            if (oversizedCount > 0)
+                Console.WriteLine($"  Oversized кластеров: {oversizedCount} — отправляю в semantic tagging...");
 
             foreach (var cluster in serpClusters)
             {
                 if (cluster.Count <= maxClusterSize)
                 {
-                    splitClusters.Add(cluster);
-                }
-                else
-                {
-                    Console.WriteLine($"  Кластер {cluster.Count} ключей > max ({maxClusterSize}) — дробление...");
-                    var (subClusters, _) = SplitOversizedRecursive(
-                        cluster, serpData, maxClusterSize, _serpSettings.OverlapThreshold);
-
-                    splitClusters.AddRange(subClusters);
-                }
-            }
-
-            Console.WriteLine($"  После графового дробления: {splitClusters.Count} кластеров.");
-
-            // ==========================================
-            // Фаза 3b: AI Semantic Split (deepseek-chat) для hard-stopped кластеров
-            // Кластеры, оставшиеся oversized после Hard Stop 6 — широкий интент,
-            // AI разобьёт по логическим признакам (не по SERP).
-            // ==========================================
-            Console.WriteLine($"\n--- Фаза 3b: AI Semantic Split для hard-stopped кластеров ---");
-
-            var finalClusters = new List<List<string>>();
-            int hardStoppedCount = splitClusters.Count(c => c.Count > maxClusterSize);
-
-            if (hardStoppedCount > 0)
-                Console.WriteLine($"  Hard-stopped: {hardStoppedCount} кластеров — отправляю в deepseek-chat...");
-
-            foreach (var cluster in splitClusters)
-            {
-                if (cluster.Count <= maxClusterSize)
-                {
                     finalClusters.Add(cluster);
+                    continue;
                 }
-                else
+
+                Console.WriteLine($"  Кластер {cluster.Count} ключей → Semantic Map-Reduce...");
+
+                // Шаг 1: Chunking по 100 ключей
+                var chunks = cluster
+                    .Select((key, idx) => new { key, idx })
+                    .GroupBy(x => x.idx / 100)
+                    .Select(g => g.Select(x => x.key).ToList())
+                    .ToList();
+
+                Console.WriteLine($"    Чанков: {chunks.Count} по ~100 ключей.");
+
+                // Шаг 2: Map — последовательная тегизация чанков с передачей контекста
+                // Каждый следующий чанк видит уже созданные теги и переиспользует их
+                var tagGroups = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+                var accumulatedTagNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                int totalTagged = 0;
+
+                for (int ci = 0; ci < chunks.Count; ci++)
                 {
-                    Console.Write($"  Кластер {cluster.Count} ключей → AI semantic split... ");
-                    var aiSplit = await SplitClusterAsync(cluster, maxClusterSize);
+                    var result = await TagKeywordsAsync(chunks[ci], accumulatedTagNames);
 
-                    if (aiSplit != null && aiSplit.Count > 0)
+                    if (result == null)
                     {
-                        var allSplitKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                        foreach (var kvp in aiSplit)
-                        {
-                            finalClusters.Add(kvp.Value);
-                            foreach (var k in kvp.Value)
-                                allSplitKeys.Add(k);
-                        }
+                        Console.WriteLine($"      ⚠ чанк {ci + 1}/{chunks.Count}: ошибка, пропущен.");
+                        continue;
+                    }
 
-                        // Потерянные AI ключи — singleton-кластеры
-                        foreach (var key in cluster)
-                        {
-                            if (!allSplitKeys.Contains(key))
-                                finalClusters.Add(new List<string> { key });
-                        }
+                    foreach (var tk in result)
+                    {
+                        if (string.IsNullOrWhiteSpace(tk.Keyword) || string.IsNullOrWhiteSpace(tk.Tag))
+                            continue;
 
-                        Console.WriteLine($"→ {aiSplit.Count} подкластеров.");
+                        if (!tagGroups.ContainsKey(tk.Tag))
+                            tagGroups[tk.Tag] = new List<string>();
+
+                        tagGroups[tk.Tag].Add(tk.Keyword);
+                        accumulatedTagNames.Add(tk.Tag);
+                        processedOversizedKeys.Add(tk.Keyword);
+                        totalTagged++;
+                    }
+
+                    Console.WriteLine($"      чанк {ci + 1}/{chunks.Count}: {result.Count} ключей тегизировано, всего тегов: {accumulatedTagNames.Count}");
+                }
+
+                // Шаг 3: Проверка лимитов
+                foreach (var kvp in tagGroups)
+                {
+                    if (kvp.Value.Count <= maxClusterSize)
+                    {
+                        finalClusters.Add(kvp.Value);
                     }
                     else
                     {
-                        // Fallback — оставляем как singleton
-                        Console.WriteLine("(ошибка AI, оставлен как singletons)");
-                        foreach (var key in cluster)
-                            finalClusters.Add(new List<string> { key });
+                        Console.WriteLine($"    Тег '{kvp.Key}' собрал {kvp.Value.Count} > {maxClusterSize} — оставляем как есть.");
+                        finalClusters.Add(kvp.Value);
                     }
                 }
+
+                Console.WriteLine($"    → {tagGroups.Count} логических подкластеров ({totalTagged}/{cluster.Count} ключей тегизировано).");
             }
 
-            Console.WriteLine($"  После AI semantic split: {finalClusters.Count} кластеров.");
+            // Собираем ключи oversized-кластеров, не прошедшие тегизацию — вернутся в нераспределённые
+            var lostOversizedKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var cluster in serpClusters.Where(c => c.Count > maxClusterSize))
+            {
+                foreach (var key in cluster)
+                {
+                    if (!processedOversizedKeys.Contains(key))
+                        lostOversizedKeys.Add(key);
+                }
+            }
+            if (lostOversizedKeys.Count > 0)
+                Console.WriteLine($"  [Rescue] Не тегизировано (возврат в нераспределённые): {lostOversizedKeys.Count} ключей.");
+
+            Console.WriteLine($"  После Semantic Map-Reduce: {finalClusters.Count} кластеров.");
 
             // ==========================================
             // Фаза 4: AI-именование per-cluster (deepseek-reasoner)
@@ -217,6 +234,14 @@ namespace KeywordClusterizer
             int clusterIndex = 0;
             var namedClusters = new Dictionary<string, List<string>>();
             var allUnclustered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Ключи, не спасённые RescuePass — возвращаем в нераспределённые
+            foreach (var key in serpUnclustered)
+                allUnclustered.Add(key);
+
+            // Ключи oversized-кластеров, не прошедшие Semantic Map-Reduce — тоже в нераспределённые
+            foreach (var key in lostOversizedKeys)
+                allUnclustered.Add(key);
 
             foreach (var cluster in finalClusters)
             {
@@ -330,64 +355,40 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
-        /// Рекурсивно дробит oversized-кластер через граф кластеризацию с повышенным порогом.
-        /// Если кластер > maxSize — применяет SerpGraphClusterizer с порогом currentThreshold + 1.
-        /// Рекурсивно повторяет для каждого подкластера, пока все не станут ≤ maxSize
-        /// или порог не превысит TopResultsCount (дальше дробить некуда).
+        /// Semantic Map-Reduce: отправляет чанк ключей в deepseek-chat для тегизации.
+        /// Каждому ключу присваивается логический тег (2-3 слова).
         /// </summary>
-        private (List<List<string>> SubClusters, List<string> Unclustered) SplitOversizedRecursive(
-            List<string> cluster,
-            Dictionary<string, KeywordSearchResult> serpData,
-            int maxSize,
-            int currentThreshold)
+        private async Task<List<TaggedKeyword>?> TagKeywordsAsync(
+            List<string> chunk,
+            HashSet<string>? existingTags = null)
         {
-            // Hard Stop: если порог достиг 6, а кластер всё ещё oversized —
-            // это широкий интент, граф его не разобьёт (6 общих URL = одна посадочная).
-            if (cluster.Count <= maxSize || currentThreshold > _serpSettings.TopResultsCount
-                || (currentThreshold >= 6 && cluster.Count > maxSize))
+            string instruction = LoadInstruction("instructions/serp_tagging.txt");
+            if (string.IsNullOrWhiteSpace(instruction))
+                return null;
+
+            // Подставляем уже созданные теги как контекст для переиспользования
+            string existingTagsBlock = existingTags != null && existingTags.Count > 0
+                ? string.Join(", ", existingTags.Select(t => $"'{t}'"))
+                : "нет созданных тегов";
+            instruction = instruction.Replace("{existing_tags}", existingTagsBlock);
+
+            // Не используем глобальный system_prompt.txt — он навязывает структуру
+            // { clusters, unclustered }, а инструкция serp_tagging.txt требует
+            // { tags: [{ keyword, tag }] }
+            string systemPrompt = BuildSystemPrompt(instruction, includeSystemPrompt: false);
+            string userMessage = string.Join("\n", chunk);
+
+            try
             {
-                return (new List<List<string>> { cluster }, new List<string>());
+                var response = await DeepSeekHelper.SendRawRequestAsync<TaggingResponse>(
+                    _client, systemPrompt, userMessage, _deepSeekSettings);
+
+                return response?.Tags;
             }
-
-            int nextThreshold = currentThreshold + 1;
-            Console.WriteLine($"    Split с порогом {nextThreshold}...");
-
-            // Создаём подграф только для ключей этого кластера
-            var subSerpData = new Dictionary<string, KeywordSearchResult>(
-                StringComparer.OrdinalIgnoreCase);
-
-            foreach (var key in cluster)
+            catch (Exception)
             {
-                if (serpData.TryGetValue(key, out var sr))
-                    subSerpData[key] = sr;
+                return null;
             }
-
-            var subGraph = new SerpGraphClusterizer(nextThreshold, _serpSettings.TopResultsCount);
-            var (subClusters, subUnclustered) = subGraph.Clusterize(subSerpData);
-
-            // Орфаны (узлы с 0 связей при этом пороге) — синглтоны.
-            // Они формировали кластер на пороге N-1, не выкидываем их.
-            subClusters.AddRange(subUnclustered.Select(k => new List<string> { k }));
-            subUnclustered.Clear();
-
-            if (subClusters.Count <= 1 && subClusters.Sum(c => c.Count) == cluster.Count)
-            {
-                // Повышение порога не помогло разбить — оставляем как есть
-                return (new List<List<string>> { cluster }, new List<string>());
-            }
-
-            // Рекурсивно дробим каждый подкластер
-            var result = new List<List<string>>();
-
-            foreach (var subCluster in subClusters)
-            {
-                var (furtherClusters, _) = SplitOversizedRecursive(
-                    subCluster, serpData, maxSize, nextThreshold);
-
-                result.AddRange(furtherClusters);
-            }
-
-            return (result, new List<string>());
         }
 
         /// <summary>
@@ -487,241 +488,6 @@ namespace KeywordClusterizer
             return null;
         }
 
-        /// <summary>
-        /// Дробит oversized-кластеры через deepseek-chat.
-        /// </summary>
-        private async Task<Dictionary<string, List<string>>> SplitOversizedClustersAsync(
-            Dictionary<string, List<string>> clusters, int maxSize)
-        {
-            if (maxSize <= 0)
-                return clusters;
-
-            var result = new Dictionary<string, List<string>>();
-            int totalBefore = clusters.Count;
-
-            foreach (var kvp in clusters)
-            {
-                // Служебные и мелкие кластеры не дробится
-                if (kvp.Key == UnclusteredKey || kvp.Value.Count <= maxSize)
-                {
-                    result[kvp.Key] = kvp.Value;
-                    continue;
-                }
-
-                Console.WriteLine($"  \"{kvp.Key}\" ({kvp.Value.Count} ключей, лимит {maxSize}) — дробим...");
-
-                var split = await SplitClusterAsync(kvp.Value, maxSize);
-
-                if (split != null && split.Count > 0)
-                {
-                    foreach (var s in split)
-                        result[s.Key] = s.Value;
-
-                    int newClusters = split.Count;
-                    Console.WriteLine($"    → Разбит на {newClusters} кластеров.");
-                }
-                else
-                {
-                    // Не удалось разбить — оставляем как есть
-                    Console.WriteLine($"    → Не удалось разбить, оставлен как есть.");
-                    result[kvp.Key] = kvp.Value;
-                }
-            }
-
-            return result;
-        }
-
-        /// <summary>
-        /// Отправляет oversized-кластер в deepseek-chat для разбивки.
-        /// </summary>
-        private async Task<Dictionary<string, List<string>>?> SplitClusterAsync(
-            List<string> keywords, int maxSize)
-        {
-            string instructionTemplate = LoadInstruction("instructions/serp_split_oversized.txt");
-            if (string.IsNullOrWhiteSpace(instructionTemplate))
-                return null;
-
-            string instruction = string.Format(instructionTemplate,
-                keywords.Count, maxSize);
-
-            string systemPrompt = BuildSystemPrompt(instruction);
-            string userMessage = string.Join("\n", keywords);
-
-            try
-            {
-                var clusters = await DeepSeekHelper.SendRequestAsync(
-                    _client, systemPrompt, userMessage, _deepSeekSettings);
-
-                return clusters;
-            }
-            catch (Exception)
-            {
-                return null;
-            }
-        }
-
-        // ═══════════════════════════════════════════════════════
-        // AI-First Pipeline (старый, для обратной совместимости)
-        // ═══════════════════════════════════════════════════════
-
-        private async Task<Dictionary<string, List<string>>?> RunAiFirstAsync(List<string> keywords)
-        {
-            int chunkSize = _businessSettings.ChunkSize;
-            int maxClusterSize = _businessSettings.ParseMaxClusterSize();
-
-            Console.WriteLine($"\nПравило гранулярности: {_businessSettings.GranularityRule}");
-            Console.WriteLine($"Максимум ключей на кластер (парсинг): {maxClusterSize}");
-
-            // Шаг 1: Draft
-            Console.WriteLine($"\n--- Шаг 1: Draft (первые {chunkSize} ключей) ---");
-            var draftChunk = keywords.Take(chunkSize).ToList();
-            string draftInstruction = string.Format(
-                LoadInstruction("instructions/step1_draft.txt"),
-                maxClusterSize);
-
-            string serpContext = "";
-            if (_serpSettings.EnabledForDraft && _xmlRiverClient != null)
-            {
-                Console.WriteLine("  Сбор SERP-контекста для первого чанка...");
-                serpContext = await BuildSerpContextAsync(draftChunk);
-            }
-
-            string draftPrompt = BuildSystemPrompt(draftInstruction, serpContext);
-
-            var clusters = await DeepSeekHelper.SendRequestAsync(
-                _client, draftPrompt, string.Join("\n", draftChunk), _deepSeekSettings);
-
-            if (clusters == null || clusters.Count == 0)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine("[ОШИБКА] Draft не вернул ни одного кластера.");
-                Console.ResetColor();
-                return null;
-            }
-
-            Console.WriteLine($"Создано {clusters.Count} кластеров на {draftChunk.Count} ключах.");
-
-            // Шаг 2: Mapping
-            Console.WriteLine($"\n--- Шаг 2: Mapping (оставшиеся {keywords.Count - chunkSize} ключей) ---");
-            string mappingInstructionTemplate = LoadInstruction("instructions/step2_mapping.txt");
-
-            for (int i = chunkSize; i < keywords.Count; i += chunkSize)
-            {
-                var chunk = keywords.Skip(i).Take(chunkSize).ToList();
-                var clusterNames = string.Join(", ", clusters.Keys);
-                string mappingInstruction = string.Format(
-                    mappingInstructionTemplate,
-                    clusterNames,
-                    maxClusterSize);
-                string mappingPrompt = BuildSystemPrompt(mappingInstruction);
-
-                Console.Write($"  Чанк {i / chunkSize + 1}: {chunk.Count} ключей... ");
-
-                try
-                {
-                    var delta = await DeepSeekHelper.SendRequestAsync(
-                        _client, mappingPrompt, string.Join("\n", chunk), _deepSeekSettings);
-
-                    if (delta != null)
-                    {
-                        clusters = MergeClusters(clusters, delta);
-                        Console.WriteLine($"готово. Всего кластеров: {clusters.Count}");
-                    }
-                    else
-                    {
-                        Console.WriteLine("ошибка (null), пропускаем чанк.");
-                    }
-                }
-                catch (Exception)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"таймаут/ошибка, пропускаем чанк.");
-                    Console.ResetColor();
-                }
-            }
-
-            // Шаг 3: Refactoring
-            Console.WriteLine("\n--- Шаг 3: Refactoring ---");
-            string refactorInstructionTemplate = LoadInstruction("instructions/step3_refactoring.txt");
-            string refactorInstruction = string.Format(
-                refactorInstructionTemplate,
-                maxClusterSize,
-                _businessSettings.ClusteringLogic);
-            string refactorPrompt = BuildSystemPrompt(refactorInstruction);
-            string clustersJson = JsonSerializer.Serialize(clusters);
-
-            var refactoringSettings = new DeepSeekSettings
-            {
-                ApiKey = _deepSeekSettings.ApiKey,
-                Model = string.IsNullOrEmpty(_deepSeekSettings.RefactoringModel)
-                    ? _deepSeekSettings.Model
-                    : _deepSeekSettings.RefactoringModel,
-                Temperature = _deepSeekSettings.Temperature,
-                MaxTokens = _deepSeekSettings.MaxTokens,
-                TopP = _deepSeekSettings.TopP
-            };
-
-            Console.WriteLine($"  Модель: {refactoringSettings.Model}");
-
-            try
-            {
-                var finalClusters = await DeepSeekHelper.SendRequestAsync(
-                    _client, refactorPrompt, clustersJson, refactoringSettings);
-
-                if (finalClusters != null)
-                {
-                    Console.WriteLine("Рефакторинг завершён.");
-                    clusters = finalClusters;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"[ПРЕДУПРЕЖДЕНИЕ] Шаг 3 (Refactoring) не выполнен: {ex.GetType().Name}");
-                Console.ResetColor();
-            }
-
-            // Шаг 4: Iterative Refinement
-            Console.WriteLine("\n--- Шаг 4: Iterative Refinement (до 5 итераций) ---");
-            var clusterSizes = clusters
-                .Where(c => c.Key != UnclusteredKey)
-                .Select(c => c.Value.Count)
-                .OrderByDescending(s => s)
-                .ToList();
-
-            int oversizedCount = clusterSizes.Count(s => s > maxClusterSize);
-            Console.WriteLine($"  Кластеров: {clusters.Count} (без учёта {UnclusteredKey}: {clusterSizes.Count})");
-            Console.WriteLine($"  MaxClusterSize = {maxClusterSize}");
-            Console.WriteLine($"  Oversized: {oversizedCount}");
-
-            if (oversizedCount == 0)
-            {
-                Console.WriteLine($"  Размеры (макс/мин/сред): {clusterSizes.FirstOrDefault()}/" +
-                    $"{clusterSizes.LastOrDefault()}/{clusterSizes.Average():F1}");
-            }
-
-            clusters = await RefinementLoopAsync(clusters, maxClusterSize);
-
-            // Шаг 4.5: Semantic Merge
-            Console.WriteLine("\n--- Шаг 4.5: Semantic Merge (дедупликация) ---");
-            clusters = await SemanticMergeAsync(clusters, maxClusterSize);
-
-            // Шаг 4.6: SERP Validation
-            Console.WriteLine("\n--- Шаг 4.6: SERP Validation (XmlRiver) ---");
-            if (_serpValidator != null)
-            {
-                Console.WriteLine("  SERP-валидация включена. Проверка кластеров через поисковую выдачу...");
-                clusters = await _serpValidator.ValidateAsync(clusters);
-            }
-            else
-            {
-                Console.WriteLine("  SERP-валидация отключена (не указаны XMLRiver_User/Key).");
-            }
-
-            Console.WriteLine($"\nИтого: {clusters.Count} кластеров.");
-            return clusters;
-        }
-
         // ═══════════════════════════════════════════════════════
         // Общие вспомогательные методы
         // ═══════════════════════════════════════════════════════
@@ -759,186 +525,6 @@ namespace KeywordClusterizer
                 parts.Add(serpContext);
 
             return string.Join("\n\n", parts);
-        }
-
-        /// <summary>
-        /// Собирает SERP-контекст для первого чанка ключей.
-        /// </summary>
-        private async Task<string> BuildSerpContextAsync(List<string> chunkKeys)
-        {
-            if (_xmlRiverClient == null || chunkKeys.Count == 0)
-                return "";
-
-            try
-            {
-                var serpData = await _xmlRiverClient.SearchBatchAsync(
-                    chunkKeys,
-                    _serpSettings.MaxConcurrency,
-                    _serpSettings.TopResultsCount);
-
-                if (serpData.Count == 0)
-                    return "";
-
-                // Формируем компактный блок: ключ → список доменов
-                var lines = new List<string>();
-                foreach (var kvp in serpData)
-                {
-                    var domains = kvp.Value.Results
-                        .Select(r => r.Domain)
-                        .Where(d => !string.IsNullOrWhiteSpace(d))
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .Take(5);
-
-                    lines.Add($"  \"{kvp.Key}\": {string.Join(", ", domains)}");
-                }
-
-                string serpBlock = string.Join("\n", lines);
-                string serpContextTemplate = LoadInstruction("instructions/serp_context_block.txt");
-
-                if (string.IsNullOrWhiteSpace(serpContextTemplate))
-                    return "";
-
-                return string.Format(serpContextTemplate, serpBlock);
-            }
-            catch
-            {
-                return "";
-            }
-        }
-
-        /// <summary>
-        /// Итеративный цикл AI-рефайнмента (только для AI-first режима).
-        /// </summary>
-        private async Task<Dictionary<string, List<string>>> RefinementLoopAsync(
-            Dictionary<string, List<string>> clusters, int maxSize)
-        {
-            const int maxIterations = 5;
-            var currentClusters = new Dictionary<string, List<string>>(clusters);
-
-            for (int iteration = 0; iteration < maxIterations; iteration++)
-            {
-                var oversized = currentClusters
-                    .Where(c => c.Key != UnclusteredKey && c.Value.Count > maxSize)
-                    .ToDictionary(c => c.Key, c => c.Value);
-
-                if (oversized.Count == 0)
-                {
-                    Console.WriteLine($"  Все кластеры в рамках лимита (maxSize={maxSize}).");
-                    return currentClusters;
-                }
-
-                var oversizedInfo = oversized
-                    .OrderByDescending(c => c.Value.Count)
-                    .Select(c => $"  • {c.Key} = {c.Value.Count} ключей");
-                Console.WriteLine($"  Oversized ({oversized.Count} шт.):\n{string.Join("\n", oversizedInfo)}");
-
-                Console.Write($"  Итерация {iteration + 1}/{maxIterations}: разбиваем {oversized.Count} кластеров... ");
-
-                string oversizedJson = JsonSerializer.Serialize(oversized);
-                string refinementInstruction = string.Format(
-                    LoadInstruction("instructions/refinement_iteration.txt"),
-                    maxSize);
-                string refinementPrompt = BuildSystemPrompt(refinementInstruction);
-
-                try
-                {
-                    var refined = await DeepSeekHelper.SendRequestAsync(
-                        _client, refinementPrompt, oversizedJson, _deepSeekSettings);
-
-                    if (refined != null)
-                    {
-                        foreach (var key in oversized.Keys)
-                            currentClusters.Remove(key);
-
-                        currentClusters = MergeClusters(currentClusters, refined);
-                        Console.WriteLine($"теперь {currentClusters.Count} кластеров.");
-                    }
-                    else
-                    {
-                        Console.WriteLine("ошибка (null), прерываем refinement.");
-                        break;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"ошибка ({ex.GetType().Name}), прерываем refinement.");
-                    Console.ResetColor();
-                    break;
-                }
-            }
-
-            return currentClusters;
-        }
-
-        /// <summary>
-        /// Semantic Merge — AI-дедупликация (только для AI-first режима).
-        /// </summary>
-        private async Task<Dictionary<string, List<string>>> SemanticMergeAsync(
-            Dictionary<string, List<string>> clusters, int maxSize)
-        {
-            if (clusters.Count == 0)
-                return clusters;
-
-            string clustersJson = JsonSerializer.Serialize(clusters);
-            string mergeInstruction = string.Format(
-                LoadInstruction("instructions/merge_deduplication.txt"),
-                maxSize);
-            string mergePrompt = BuildSystemPrompt(mergeInstruction);
-
-            Console.WriteLine("  Отправка всех кластеров на дедупликацию...");
-
-            try
-            {
-                var merged = await DeepSeekHelper.SendRequestAsync(
-                    _client, mergePrompt, clustersJson, _deepSeekSettings);
-
-                if (merged != null)
-                {
-                    int before = clusters.Count;
-                    int after = merged.Count;
-                    int mergedCount = before - after;
-                    if (mergedCount > 0)
-                        Console.WriteLine($"  Объединено кластеров: {mergedCount} (было {before}, стало {after}).");
-                    else
-                        Console.WriteLine("  Дубликатов не найдено.");
-
-                    return merged;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.ForegroundColor = ConsoleColor.Yellow;
-                Console.WriteLine($"[ПРЕДУПРЕЖДЕНИЕ] Semantic Merge не выполнен: {ex.GetType().Name}");
-                Console.ResetColor();
-            }
-
-            return clusters;
-        }
-
-        /// <summary>
-        /// Сливает два словаря кластеров.
-        /// </summary>
-        private static Dictionary<string, List<string>> MergeClusters(
-            Dictionary<string, List<string>> existing,
-            Dictionary<string, List<string>> delta)
-        {
-            foreach (var kvp in delta)
-            {
-                if (existing.ContainsKey(kvp.Key))
-                {
-                    foreach (var keyword in kvp.Value)
-                    {
-                        if (!existing[kvp.Key].Contains(keyword))
-                            existing[kvp.Key].Add(keyword);
-                    }
-                }
-                else
-                {
-                    existing[kvp.Key] = kvp.Value;
-                }
-            }
-            return existing;
         }
 
         /// <summary>

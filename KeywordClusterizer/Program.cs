@@ -64,9 +64,6 @@ namespace KeywordClusterizer
 
                         if (business.TryGetProperty("granularityRule", out var gr))
                             businessSettings.GranularityRule = gr.GetString() ?? "";
-
-                        if (business.TryGetProperty("chunkSize", out var cs))
-                            businessSettings.ChunkSize = cs.GetInt32();
                     }
 
                     // Чтение SERP-настроек
@@ -81,26 +78,14 @@ namespace KeywordClusterizer
                         if (serp.TryGetProperty("xmlriverKey", out var xk))
                             serpSettings.XmlriverKey = xk.GetString() ?? "";
 
-                        if (serp.TryGetProperty("enableValidation", out var ev))
-                            serpSettings.EnableValidation = ev.GetBoolean();
-
-                        if (serp.TryGetProperty("minOverlap", out var mo))
-                            serpSettings.MinOverlap = mo.GetDouble();
-
                         if (serp.TryGetProperty("topResultsCount", out var trc))
                             serpSettings.TopResultsCount = trc.GetInt32();
-
-                        if (serp.TryGetProperty("sampleSize", out var ss))
-                            serpSettings.SampleSize = ss.GetInt32();
 
                         if (serp.TryGetProperty("maxRetries", out var mr))
                             serpSettings.MaxRetries = mr.GetInt32();
 
                         if (serp.TryGetProperty("retryDelayMs", out var rd))
                             serpSettings.RetryDelayMs = rd.GetInt32();
-
-                        if (serp.TryGetProperty("enableFinalValidation", out var efv))
-                            serpSettings.EnableFinalValidation = efv.GetBoolean();
 
                         if (serp.TryGetProperty("maxConcurrency", out var mc))
                             serpSettings.MaxConcurrency = mc.GetInt32();
