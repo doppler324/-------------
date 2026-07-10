@@ -25,6 +25,9 @@ KeywordClusterizer/settings.json
 # SERP cache (auto-generated, changes every run)
 KeywordClusterizer/serp_cache.json
 
+# Embeddings cache (auto-generated, changes every run)
+KeywordClusterizer/embeddings_cache.json
+
 # Output
 KeywordClusterizer/clusters.csv
 

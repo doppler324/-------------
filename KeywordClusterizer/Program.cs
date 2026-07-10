@@ -15,13 +15,15 @@ namespace KeywordClusterizer
     {
         static async Task Main(string[] args)
         {
-            Console.WriteLine("=== Кластеризатор ключевых слов (DeepSeek) ===");
+            Console.WriteLine("=== Кластеризатор ключевых слов ===");
 
             // 1. Загрузка настроек
             var settingsPath = "settings.json";
             var deepSeekSettings = new DeepSeekSettings();
             var businessSettings = new BusinessSettings();
             var serpSettings = new XmlRiverSettings();
+            var openRouterSettings = new OpenRouterSettings();
+            var phase4Settings = new Phase4Settings();
 
             if (File.Exists(settingsPath))
             {
@@ -51,6 +53,15 @@ namespace KeywordClusterizer
 
                         if (deepseek.TryGetProperty("topP", out var tp))
                             deepSeekSettings.TopP = tp.GetDouble();
+
+                        if (deepseek.TryGetProperty("enableThinking", out var et))
+                            deepSeekSettings.EnableThinking = et.GetBoolean();
+
+                        if (deepseek.TryGetProperty("reasoningEffort", out var re))
+                            deepSeekSettings.ReasoningEffort = re.GetString() ?? deepSeekSettings.ReasoningEffort;
+
+                        if (deepseek.TryGetProperty("stream", out var st))
+                            deepSeekSettings.Stream = st.GetBoolean();
                     }
 
                     // Чтение бизнес-настроек
@@ -64,6 +75,30 @@ namespace KeywordClusterizer
 
                         if (business.TryGetProperty("granularityRule", out var gr))
                             businessSettings.GranularityRule = gr.GetString() ?? "";
+
+                        if (business.TryGetProperty("mergeMode", out var mm))
+                            businessSettings.MergeMode = mm.GetString() ?? businessSettings.MergeMode;
+
+                        if (business.TryGetProperty("mergeThreshold", out var mt))
+                            businessSettings.MergeThreshold = (float)mt.GetDouble();
+
+                        if (business.TryGetProperty("centroidMergeEnabled", out var cme))
+                            businessSettings.CentroidMergeEnabled = cme.GetBoolean();
+
+                        if (business.TryGetProperty("skipNaming", out var sn))
+                            businessSettings.SkipNaming = sn.GetBoolean();
+
+                        if (business.TryGetProperty("wordLevelClustering", out var wlc))
+                        {
+                            if (wlc.TryGetProperty("enabled", out var wlce))
+                                businessSettings.WordLevelClusteringEnabled = wlce.GetBoolean();
+
+                            if (wlc.TryGetProperty("wordSimThreshold", out var wst))
+                                businessSettings.WordSimThreshold = (float)wst.GetDouble();
+
+                            if (wlc.TryGetProperty("hacThreshold", out var ht))
+                                businessSettings.HacThreshold = (float)ht.GetDouble();
+                        }
                     }
 
                     // Чтение SERP-настроек
@@ -102,6 +137,47 @@ namespace KeywordClusterizer
                         if (serp.TryGetProperty("cachePath", out var cp))
                             serpSettings.CachePath = cp.GetString() ?? serpSettings.CachePath;
                     }
+
+                    // Чтение OpenRouter-настроек
+                    if (root.TryGetProperty("openrouter", out var openrouter))
+                    {
+                        if (openrouter.TryGetProperty("apiKey", out var orKey))
+                            openRouterSettings.ApiKey = orKey.GetString()?.Trim() ?? "";
+
+                        if (openrouter.TryGetProperty("embeddingModel", out var orModel))
+                            openRouterSettings.EmbeddingModel = orModel.GetString() ?? openRouterSettings.EmbeddingModel;
+
+                        if (openrouter.TryGetProperty("embeddingDimensions", out var orDim))
+                            openRouterSettings.EmbeddingDimensions = orDim.GetInt32();
+
+                        if (openrouter.TryGetProperty("cachePath", out var orCache))
+                            openRouterSettings.CachePath = orCache.GetString() ?? openRouterSettings.CachePath;
+                    }
+
+                    // Чтение Phase 4 настроек
+                    if (root.TryGetProperty("phase4", out var phase4El))
+                    {
+                        if (phase4El.TryGetProperty("provider", out var prov))
+                            phase4Settings.Provider = prov.GetString() ?? phase4Settings.Provider;
+
+                        if (phase4El.TryGetProperty("model", out var model))
+                            phase4Settings.Model = model.GetString() ?? "";
+
+                        if (phase4El.TryGetProperty("temperature", out var temp))
+                            phase4Settings.Temperature = temp.GetDouble();
+
+                        if (phase4El.TryGetProperty("maxTokens", out var mt))
+                            phase4Settings.MaxTokens = mt.GetInt32();
+
+                        if (phase4El.TryGetProperty("enableThinking", out var et))
+                            phase4Settings.EnableThinking = et.GetBoolean();
+
+                        if (phase4El.TryGetProperty("reasoningEffort", out var re))
+                            phase4Settings.ReasoningEffort = re.GetString();
+
+                        if (phase4El.TryGetProperty("stream", out var st))
+                            phase4Settings.Stream = st.GetBoolean();
+                    }
                 }
                 catch
                 {
@@ -109,7 +185,6 @@ namespace KeywordClusterizer
                 }
             }
 
-            // 2. Проверка API ключа
             if (string.IsNullOrWhiteSpace(deepSeekSettings.ApiKey) ||
                 deepSeekSettings.ApiKey == "ВАШ_DEEPSEEK_API_KEY")
             {
@@ -152,13 +227,28 @@ namespace KeywordClusterizer
 
             Console.WriteLine($"\nЗагружено {keywords.Count} ключевых слов из файла '{filePath}'.");
 
-            // 4. Настройка HTTP клиента
-            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(10) };
+            // 4. Проверка OpenRouter API ключа
+            if (string.IsNullOrWhiteSpace(openRouterSettings.ApiKey))
+            {
+                Console.Write("Введите ваш API ключ OpenRouter (для эмбеддингов): ");
+                openRouterSettings.ApiKey = Console.ReadLine()?.Trim() ?? "";
+            }
+
+            if (string.IsNullOrWhiteSpace(openRouterSettings.ApiKey))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("OpenRouter API ключ не предоставлен. Кластеризация по эмбеддингам невозможна.");
+                Console.ResetColor();
+                return;
+            }
+
+            // 5. Настройка HTTP клиента
+            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(30) };
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", deepSeekSettings.ApiKey);
 
-            // 5. Запуск пайплайна кластеризации
-            var pipeline = new ClusterizationPipeline(client, deepSeekSettings, businessSettings, serpSettings);
+            // 6. Запуск пайплайна кластеризации
+            var pipeline = new ClusterizationPipeline(client, deepSeekSettings, businessSettings, serpSettings, openRouterSettings, phase4Settings);
             var clusters = await pipeline.RunAsync(keywords);
 
             // 6. Вывод и сохранение результатов

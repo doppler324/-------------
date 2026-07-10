@@ -123,8 +123,27 @@ namespace KeywordClusterizer
             var semaphore = new SemaphoreSlim(maxConcurrency);
             var results = new ConcurrentDictionary<string, KeywordSearchResult>();
 
-            Console.WriteLine($"    [XmlRiver] Параллельный опрос {keywords.Count} ключей " +
-                $"({maxConcurrency} потоков)...");
+            // Проверяем, сколько ключей уже в кэше
+            int cachedCount = 0;
+            if (_cache != null && _settings.EnableCache)
+            {
+                foreach (var key in keywords)
+                {
+                    if (_cache.ContainsKey(key))
+                        cachedCount++;
+                }
+            }
+
+            if (cachedCount == keywords.Count)
+            {
+                // Все ключи из кэша — достаточно одной строки
+                Console.WriteLine($"    [SERP] Загружено {keywords.Count} записей из кэша.");
+            }
+            else
+            {
+                int apiCount = keywords.Count - cachedCount;
+                Console.WriteLine($"    [SERP] Кэш: {cachedCount}, API: {apiCount} запросов ({maxConcurrency} потоков)...");
+            }
 
             await Parallel.ForEachAsync(keywords, async (key, ct) =>
             {
@@ -144,7 +163,6 @@ namespace KeywordClusterizer
             if (_cache != null && _settings.EnableCache)
                 _cache.Save();
 
-            Console.WriteLine($"    [XmlRiver] Готово: {results.Count} ключей опрошено.");
             return results.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
         }
 

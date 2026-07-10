@@ -18,6 +18,52 @@ namespace KeywordClusterizer.Models
         public string GranularityRule { get; set; } = "";
 
         /// <summary>
+        /// Режим слияния кластеров (Phase 4.5):
+        /// "off" — пропустить,
+        /// "ai" — DeepSeek Merge Pass,
+        /// "centroid" — Tanimoto Coefficient центроидов (бесплатно, без API).
+        /// </summary>
+        public string MergeMode { get; set; } = "centroid";
+
+        /// <summary>Порог Tanimoto Coefficient для centroid-режима (0.0-1.0). Рекомендуется 0.85 (эквивалент Cosine ~0.92).</summary>
+        public float MergeThreshold { get; set; } = 0.85f;
+
+        /// <summary>Если false — отключает Phase 3.5 (Centroid Merge).</summary>
+        public bool CentroidMergeEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Если true — пропускает AI-именование кластеров (Фаза 4).
+        /// Вместо этого генерирует технические имена "Кластер 1", "Кластер 2", ...
+        /// Полезно для быстрой отладки центроидного слияния без затрат на API.
+        /// </summary>
+        public bool SkipNaming { get; set; } = false;
+
+        // ═══════════════════════════════════════════════════════
+        // Word-Level Clustering (Phase 3)
+        // SERP-first → внутри каждого SERP-кластера:
+        // IDF weighting + Weighted Soft Jaccard + HAC
+        // ═══════════════════════════════════════════════════════
+
+        /// <summary>
+        /// Включает word-level кластеризацию внутри SERP-кластеров.
+        /// Использует IDF-взвешенный Soft Jaccard с word embeddings + HAC.
+        /// </summary>
+        public bool WordLevelClusteringEnabled { get; set; } = true;
+
+        /// <summary>
+        /// Порог cosine similarity между word embeddings для засчитывания совпадения (0.0-1.0).
+        /// Рекомендуется: 0.85 — ловит морфологию "поплавок"≈"поплавка".
+        /// </summary>
+        public float WordSimThreshold { get; set; } = 0.85f;
+
+        /// <summary>
+        /// Порог Weighted Jaccard для остановки HAC (0.0-1.0).
+        /// Рекомендуется: 0.35.
+        /// Ниже = мельче кластеры, выше = крупнее.
+        /// </summary>
+        public float HacThreshold { get; set; } = 0.35f;
+
+        /// <summary>
         /// Собирает базовые правила в строку для подстановки в системный промпт.
         /// </summary>
         public string ToBaseRules() =>
