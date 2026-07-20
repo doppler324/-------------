@@ -17,6 +17,27 @@ namespace KeywordClusterizer
         {
             Console.WriteLine("=== Кластеризатор ключевых слов ===");
 
+            // === Меню выбора режима ===
+            Console.WriteLine("\nВыберите режим работы:");
+            Console.WriteLine("  1 - Кластеризация ключевых слов");
+            Console.WriteLine("  2 - Чистка ключевых запросов");
+            Console.Write("\nВаш выбор (1/2): ");
+            string modeChoice = Console.ReadLine()?.Trim() ?? "1";
+
+            if (modeChoice == "2")
+                await RunCleanerModeAsync();
+            else
+                await RunClusterizationModeAsync();
+
+            Console.WriteLine("\nНажмите любую клавишу для выхода...");
+            Console.ReadKey();
+        }
+
+        /// <summary>
+        /// Режим кластеризации (существующий функционал).
+        /// </summary>
+        static async Task RunClusterizationModeAsync()
+        {
             // 1. Загрузка настроек
             var settingsPath = "settings.json";
             var deepSeekSettings = new DeepSeekSettings();
@@ -189,7 +210,7 @@ namespace KeywordClusterizer
                 deepSeekSettings.ApiKey == "ВАШ_DEEPSEEK_API_KEY")
             {
                 Console.Write("Введите ваш API ключ DeepSeek: ");
-                deepSeekSettings.ApiKey = Console.ReadLine()?.Trim() ?? "";
+                deepSeekSettings.ApiKey = ReadPassword();
             }
 
             if (string.IsNullOrWhiteSpace(deepSeekSettings.ApiKey))
@@ -200,15 +221,47 @@ namespace KeywordClusterizer
                 return;
             }
 
-            // 3. Загрузка ключевых слов
-            string filePath = "keywords.txt";
+            // 3. Выбор файла с ключевыми словами
+            Console.WriteLine("\nВыберите файл с ключевыми словами:");
+            Console.WriteLine("  1 - keywords.txt (исходные)");
+            Console.WriteLine("  2 - cleaned.txt  (после чистки)");
+            Console.Write("\nВаш выбор (1/2): ");
+            string fileChoice = Console.ReadLine()?.Trim() ?? "1";
+
+            string filePath = fileChoice == "2" ? "cleaned.txt" : "keywords.txt";
 
             if (!File.Exists(filePath))
             {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine($"[ОШИБКА] Файл '{filePath}' не найден.");
+                // Если выбранного файла нет — пробуем другой
+                string altPath = fileChoice == "2" ? "keywords.txt" : "cleaned.txt";
+
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"[ПРЕДУПРЕЖДЕНИЕ] Файл '{filePath}' не найден.");
                 Console.ResetColor();
-                return;
+
+                if (File.Exists(altPath))
+                {
+                    Console.Write($"Использовать '{altPath}'? (y/n): ");
+                    string? answer = Console.ReadLine()?.Trim().ToLower();
+                    if (answer == "y" || answer == "yes" || answer == "д" || answer == "да")
+                    {
+                        filePath = altPath;
+                    }
+                    else
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine("Выход...");
+                        Console.ResetColor();
+                        return;
+                    }
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine($"[ОШИБКА] Файл '{altPath}' тоже не найден. Нечего кластеризовать.");
+                    Console.ResetColor();
+                    return;
+                }
             }
 
             var lines = File.ReadAllLines(filePath);
@@ -263,9 +316,212 @@ namespace KeywordClusterizer
                 Console.WriteLine("\n[ОШИБКА] Кластеризация не дала результатов.");
                 Console.ResetColor();
             }
+        }
 
-            Console.WriteLine("\nНажмите любую клавишу для выхода...");
-            Console.ReadKey();
+        /// <summary>
+        /// Режим чистки ключевых запросов (новый функционал).
+        /// Показывает меню выбора типа запроса, модели, затем запускает чистку.
+        /// </summary>
+        static async Task RunCleanerModeAsync()
+        {
+            // 1. Загрузка настроек
+            var settingsPath = "settings.json";
+            var deepSeekSettings = new DeepSeekSettings();
+            var openRouterSettings = new OpenRouterSettings();
+            var cleanerSettings = new CleanerSettings();
+
+            if (File.Exists(settingsPath))
+            {
+                try
+                {
+                    string json = File.ReadAllText(settingsPath);
+                    using JsonDocument doc = JsonDocument.Parse(json);
+                    var root = doc.RootElement;
+
+                    // API ключ DeepSeek (из settings.json, только если нет — запросить ввод)
+                    if (root.TryGetProperty("apiKey", out var apiKeyEl))
+                        deepSeekSettings.ApiKey = apiKeyEl.GetString()?.Trim() ?? "";
+
+                    // Параметры нейросети
+                    if (root.TryGetProperty("deepseek", out var deepseek))
+                    {
+                        if (deepseek.TryGetProperty("temperature", out var t))
+                            deepSeekSettings.Temperature = t.GetDouble();
+
+                        if (deepseek.TryGetProperty("maxTokens", out var mt))
+                            deepSeekSettings.MaxTokens = mt.GetInt32();
+
+                        if (deepseek.TryGetProperty("topP", out var tp))
+                            deepSeekSettings.TopP = tp.GetDouble();
+
+                        if (deepseek.TryGetProperty("stream", out var st))
+                            deepSeekSettings.Stream = st.GetBoolean();
+                    }
+
+                    // OpenRouter настройки (нужны для моделей через OpenRouter)
+                    if (root.TryGetProperty("openrouter", out var openrouter))
+                    {
+                        if (openrouter.TryGetProperty("apiKey", out var orKey))
+                            openRouterSettings.ApiKey = orKey.GetString()?.Trim() ?? "";
+                    }
+
+                    // Cleaner настройки
+                    if (root.TryGetProperty("cleaner", out var cleanerEl))
+                    {
+                        if (cleanerEl.TryGetProperty("defaultModel", out var dm))
+                            cleanerSettings.DefaultModel = dm.GetString() ?? cleanerSettings.DefaultModel;
+
+                        if (cleanerEl.TryGetProperty("defaultPoolSize", out var dps))
+                            cleanerSettings.DefaultPoolSize = dps.GetInt32();
+
+                        if (cleanerEl.TryGetProperty("outputCleaned", out var oc))
+                            cleanerSettings.OutputCleaned = oc.GetString() ?? cleanerSettings.OutputCleaned;
+
+                        if (cleanerEl.TryGetProperty("outputDiscarded", out var od))
+                            cleanerSettings.OutputDiscarded = od.GetString() ?? cleanerSettings.OutputDiscarded;
+
+                        if (cleanerEl.TryGetProperty("instructionsInformational", out var ii))
+                            cleanerSettings.InstructionsInformational = ii.GetString() ?? cleanerSettings.InstructionsInformational;
+
+                        if (cleanerEl.TryGetProperty("instructionsCommercial", out var ic))
+                            cleanerSettings.InstructionsCommercial = ic.GetString() ?? cleanerSettings.InstructionsCommercial;
+                    }
+                }
+                catch
+                {
+                    // используем значения по умолчанию
+                }
+            }
+
+            // 2. API ключ DeepSeek
+            if (string.IsNullOrWhiteSpace(deepSeekSettings.ApiKey) ||
+                deepSeekSettings.ApiKey == "ВАШ_DEEPSEEK_API_KEY")
+            {
+                Console.Write("Введите ваш API ключ DeepSeek: ");
+                deepSeekSettings.ApiKey = ReadPassword();
+            }
+
+            if (string.IsNullOrWhiteSpace(deepSeekSettings.ApiKey))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("API ключ не предоставлен. Выход...");
+                Console.ResetColor();
+                return;
+            }
+
+            // 3. Загрузка ключевых слов
+            string filePath = "keywords.txt";
+            if (!File.Exists(filePath))
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[ОШИБКА] Файл '{filePath}' не найден.");
+                Console.ResetColor();
+                return;
+            }
+
+            var lines = File.ReadAllLines(filePath);
+            var keywords = lines
+                .Where(line => !string.IsNullOrWhiteSpace(line))
+                .Select(line => line.Trim())
+                .ToList();
+
+            if (keywords.Count == 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"[ОШИБКА] Файл '{filePath}' пуст или не содержит ключевых слов.");
+                Console.ResetColor();
+                return;
+            }
+
+            Console.WriteLine($"\nЗагружено {keywords.Count} ключевых слов из файла '{filePath}'.");
+
+            // 4. Выбор типа запроса
+            Console.WriteLine("\nВыберите тип отбора:");
+            Console.WriteLine("  1 - Информационные запросы (как, что, почему)");
+            Console.WriteLine("  2 - Коммерческие запросы (купить, цена, заказать)");
+            Console.Write("\nВаш выбор (1/2): ");
+            string typeChoice = Console.ReadLine()?.Trim() ?? "1";
+            var queryType = typeChoice == "2" ? QueryType.Commercial : QueryType.Informational;
+            string queryTypeLabel = queryType == QueryType.Informational ? "информационные" : "коммерческие";
+            Console.WriteLine($"Выбран тип: {queryTypeLabel}");
+
+            // 4.b Выбор обработки брендов
+            Console.WriteLine("\nКак обрабатывать брендовые запросы:");
+            Console.WriteLine("  1 - Удалить в отдельный файл (branded.txt)");
+            Console.WriteLine("  2 - Удалить в discarded.txt");
+            Console.WriteLine("  3 - Оставить в очищенных");
+            Console.Write("\nВаш выбор (1/2/3): ");
+            string brandChoice = Console.ReadLine()?.Trim() ?? "1";
+            var brandHandling = brandChoice switch
+            {
+                "2" => BrandHandling.ToDiscarded,
+                "3" => BrandHandling.KeepAsIs,
+                _ => BrandHandling.SeparateFile
+            };
+
+            // 5. Выбор модели
+            Console.WriteLine("\nВыберите модель нейросети:");
+            Console.WriteLine("  1 - DeepSeek V4 Pro    (deepseek-v4-pro,  прямой API)");
+            Console.WriteLine("  2 - DeepSeek V4 Flash  (deepseek-v4-flash, прямой API)");
+            Console.Write("\nВаш выбор (1-2): ");
+            string modelChoice = Console.ReadLine()?.Trim() ?? "1";
+
+            string selectedModel = modelChoice == "2" ? "deepseek-v4-flash" : "deepseek-v4-pro";
+
+            // 6. Запрос темы и доп. инструкций
+            Console.WriteLine("\n--- Дополнительные настройки чистки ---");
+            Console.Write("Введите тему/нишу ключевых запросов (например: сантехника, унитазы) [Enter — пропустить]: ");
+            string? topic = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(topic)) topic = null;
+
+            Console.Write("Введите дополнительные инструкции для нейросети (Enter — пропустить): ");
+            string? additionalPrompt = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(additionalPrompt)) additionalPrompt = null;
+
+            Console.Write("Количество потоков (по умолчанию 10): ");
+            string? threadsInput = Console.ReadLine()?.Trim();
+            int maxConcurrency = 10;
+            if (int.TryParse(threadsInput, out int parsedThreads) && parsedThreads > 0)
+                maxConcurrency = parsedThreads;
+
+            // 7. Настройка HTTP клиента
+            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(3) };
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue("Bearer", deepSeekSettings.ApiKey);
+
+            // 8. Запуск чистки
+            var cleaner = new KeywordCleanerService(client, deepSeekSettings, openRouterSettings, cleanerSettings);
+            await cleaner.RunAsync(
+                keywords, queryType,
+                topic: topic,
+                additionalPrompt: additionalPrompt,
+                maxConcurrency: maxConcurrency,
+                brandHandling: brandHandling,
+                selectedModel: selectedModel);
+        }
+
+        /// <summary>
+        /// Читает пароль/ключ из консоли без отображения символов.
+        /// </summary>
+        private static string ReadPassword()
+        {
+            var password = new System.Text.StringBuilder();
+            while (true)
+            {
+                var key = Console.ReadKey(true); // intercept = true — не выводим символ
+                if (key.Key == ConsoleKey.Enter)
+                    break;
+                if (key.Key == ConsoleKey.Backspace && password.Length > 0)
+                {
+                    password.Length--;
+                }
+                else if (!char.IsControl(key.KeyChar))
+                {
+                    password.Append(key.KeyChar);
+                }
+            }
+            Console.WriteLine();
+            return password.ToString().Trim();
         }
 
         /// <summary>

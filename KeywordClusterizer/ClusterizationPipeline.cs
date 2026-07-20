@@ -203,7 +203,7 @@ namespace KeywordClusterizer
                 if (useOpenRouter)
                     Console.WriteLine($"  Провайдер: OpenRouter, модель: {phase4Config.Model}");
 
-                string? rawJson = await DeepSeekHelper.GetRawAiContentAsync(
+                var (rawJson, _) = await DeepSeekHelper.GetRawAiContentAsync(
                     _client, systemPrompt, userMessage, phase4Config,
                     overrideThinking: true,
                     overrideReasoningEffort: "high",
