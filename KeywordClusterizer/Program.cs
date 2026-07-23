@@ -97,15 +97,6 @@ namespace KeywordClusterizer
                         if (business.TryGetProperty("granularityRule", out var gr))
                             businessSettings.GranularityRule = gr.GetString() ?? "";
 
-                        if (business.TryGetProperty("mergeMode", out var mm))
-                            businessSettings.MergeMode = mm.GetString() ?? businessSettings.MergeMode;
-
-                        if (business.TryGetProperty("mergeThreshold", out var mt))
-                            businessSettings.MergeThreshold = (float)mt.GetDouble();
-
-                        if (business.TryGetProperty("centroidMergeEnabled", out var cme))
-                            businessSettings.CentroidMergeEnabled = cme.GetBoolean();
-
                         if (business.TryGetProperty("skipPhase4", out var sp4))
                             businessSettings.SkipPhase4 = sp4.GetBoolean();
 

@@ -18,20 +18,6 @@ namespace KeywordClusterizer.Models
         public string GranularityRule { get; set; } = "";
 
         /// <summary>
-        /// Режим слияния кластеров (Phase 4.5):
-        /// "off" — пропустить,
-        /// "ai" — DeepSeek Merge Pass,
-        /// "centroid" — Tanimoto Coefficient центроидов (бесплатно, без API).
-        /// </summary>
-        public string MergeMode { get; set; } = "centroid";
-
-        /// <summary>Порог Tanimoto Coefficient для centroid-режима (0.0-1.0). Рекомендуется 0.85 (эквивалент Cosine ~0.92).</summary>
-        public float MergeThreshold { get; set; } = 0.85f;
-
-        /// <summary>Если false — отключает Phase 3.5 (Centroid Merge).</summary>
-        public bool CentroidMergeEnabled { get; set; } = true;
-
-        /// <summary>
         /// Если true — полностью пропускает Фазу 4 (включая проход по кластерам).
         /// Кластеры возвращаются как есть с тех-именами. Полезно для отладки Phase 3.
         /// </summary>
