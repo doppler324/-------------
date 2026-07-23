@@ -112,35 +112,137 @@ namespace KeywordClusterizer
             RescuePass(serpClusters, serpUnclustered, serpData);
 
             // ==========================================
-            // Фаза 3: Word-level кластеризация
+            // Фаза 3: Sentence-level кластеризация
             // ==========================================
-            Console.WriteLine($"\n--- Фаза 3: Word-level кластеризация (IDF + Weighted Jaccard) ---");
+            Console.WriteLine($"\n--- Фаза 3: Sentence-level кластеризация (cosine similarity + HAC) ---");
 
             var finalClusters = new List<List<string>>();
-            var wordLevelClusterizer = new WordLevelClusterizer(
-                _businessSettings.WordSimThreshold, _businessSettings.HacThreshold);
+            var macroCores = new List<Models.MacroBucket>();
+            var sentenceLevelClusterizer = new SentenceLevelClusterizer(
+                _businessSettings.SentenceHacThreshold);
 
-            foreach (var cluster in serpClusters)
+            // Проверка API-ключа OpenRouter перед началом
+            if (_embeddingClient == null)
             {
-                if (cluster.Count <= 1)
-                {
-                    finalClusters.Add(cluster);
-                    continue;
-                }
-
-                int beforeSplit = finalClusters.Count;
-                var subClusters = await wordLevelClusterizer.ClusterizeAsync(
-                    cluster,
-                    async (words) => await _embeddingClient!.GetEmbeddingsBatchAsync(words));
-
-                finalClusters.AddRange(subClusters);
-
-                int afterSplit = finalClusters.Count;
-                Console.WriteLine($"  → {cluster.Count} → {afterSplit - beforeSplit} подкластеров (word-level)");
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine("  [ОШИБКА] OpenRouterEmbeddingClient не инициализирован (нет apiKey). Пропуск Phase 3.");
+                Console.ResetColor();
+                finalClusters.AddRange(serpClusters);
             }
+            else
+            {
+                // Тестовый запрос: проверяем, что ключ работает
+                bool apiKeyValid = await TestEmbeddingApiAsync();
+                if (!apiKeyValid)
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.WriteLine("  [ОШИБКА] API-ключ OpenRouter не работает. Пропуск Phase 3.");
+                    Console.ResetColor();
+                    finalClusters.AddRange(serpClusters);
+                }
+                else
+                {
+                    // Предзагружаем ВСЕ эмбеддинги фраз одним batch-запросом
+                    // (чтобы Phase 3.5 не делала повторных запросов к API)
+                    var allSerpPhrases = serpClusters
+                        .Where(c => c.Count > 0)
+                        .SelectMany(c => c)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToList();
 
-            _embeddingClient?.SaveCache();
-            Console.WriteLine($"  После Phase 3: {finalClusters.Count} кластеров.");
+                    Console.WriteLine($"  [Embed] Предзагрузка {allSerpPhrases.Count} эмбеддингов...");
+                    var phraseEmbeddings = await _embeddingClient.GetEmbeddingsBatchAsync(allSerpPhrases);
+
+                    foreach (var cluster in serpClusters)
+                    {
+                        if (cluster.Count <= 1)
+                        {
+                            finalClusters.Add(cluster);
+                            continue;
+                        }
+
+                        int beforeSplit = finalClusters.Count;
+                        var subClusters = await sentenceLevelClusterizer.ClusterizeAsync(
+                            cluster,
+                            // Используем уже предзагруженные эмбеддинги
+                            (phrases) => System.Threading.Tasks.Task.FromResult(
+                                phrases.Where(p => phraseEmbeddings.ContainsKey(p))
+                                    .ToDictionary(p => p, p => phraseEmbeddings[p])));
+
+                        finalClusters.AddRange(subClusters);
+
+                        int afterSplit = finalClusters.Count;
+                        Console.WriteLine($"  → {cluster.Count} → {afterSplit - beforeSplit} подкластеров (sentence-level)");
+                    }
+
+                    _embeddingClient.SaveCache();
+
+                    // Отделяем одиночек (1 фраза) — они пойдут в Rescue Pass
+                    var orphans = new List<string>();
+                    var multiClusters = new List<List<string>>();
+                    foreach (var c in finalClusters)
+                    {
+                        if (c.Count == 1)
+                            orphans.Add(c[0]);
+                        else
+                            multiClusters.Add(c);
+                    }
+
+                    Console.WriteLine($"  После Phase 3: {finalClusters.Count} микро-кластеров (одиночек: {orphans.Count}).");
+
+                    // ==========================================
+                    // Фаза 3.5: Macro Merge (Greedy, representativeMode)
+                    // ==========================================
+                    if (_businessSettings.MacroMergeEnabled && multiClusters.Count > 0)
+                    {
+                        string modeLabel = _businessSettings.RepresentativeMode == "centroid" ? "centroid" : "medoid";
+                        Console.WriteLine($"\n--- Фаза 3.5: Macro Merge ({modeLabel}, порог {_businessSettings.MacroMergeThreshold:F2}) ---");
+                        var macroMerge = new Services.MacroMergePass(
+                            _businessSettings.MacroMergeThreshold,
+                            _businessSettings.RepresentativeMode);
+
+                        macroCores = await macroMerge.MergeAsync(
+                            multiClusters,
+                            phraseEmbeddings);
+
+                        Console.WriteLine($"  После Phase 3.5: {macroCores.Count} макро-бакетов.");
+                    }
+                    else
+                    {
+                        // Если MacroMerge отключён — все мульти-кластеры становятся ядрами
+                        macroCores = multiClusters.Select(c => {
+                            string medoid = c.Count <= 2 ? c[0] : c[0];
+                            float[] rep = c.Count > 0 && phraseEmbeddings.TryGetValue(c[0], out var e) ? e : Array.Empty<float>();
+                            return new Models.MacroBucket { Name = medoid, Keywords = c.ToList(), RepresentativeVector = rep };
+                        }).ToList();
+                    }
+
+                    // ==========================================
+                    // Фаза 3.6: Rescue Pass V2 (Nearest Centroid)
+                    // ==========================================
+                    if (_businessSettings.RescuePassV2Enabled && macroCores.Count > 0)
+                    {
+                        // Добавляем serpUnclustered к сиротам
+                        orphans.AddRange(serpUnclustered);
+
+                        Console.WriteLine($"\n--- Фаза 3.6: Rescue Pass V2 (Nearest Centroid, порог {_businessSettings.RescueThreshold:F2}) ---");
+                        Console.WriteLine($"  Сирот: {orphans.Count}, ядер: {macroCores.Count}");
+
+                        var rescue = new Services.RescuePassV2(_businessSettings.RescueThreshold, _businessSettings.SentenceHacThreshold);
+                        var trueUnclustered = rescue.RescueOrphans(macroCores, orphans, phraseEmbeddings);
+
+                        if (trueUnclustered.Count > 0)
+                        {
+                            macroCores.Add(new Models.MacroBucket
+                            {
+                                Name = "Нераспределённые",
+                                Keywords = trueUnclustered
+                            });
+                            Console.WriteLine($"  Создан кластер \"Нераспределённые\": {trueUnclustered.Count} ключей.");
+                        }
+                    }
+                }
+            }
 
             // ==========================================
             // Фаза 4: AI Merge + Naming (единый call)
@@ -150,28 +252,137 @@ namespace KeywordClusterizer
             var namedClusters = new Dictionary<string, List<string>>();
             var allUnclustered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (var key in serpUnclustered)
-                allUnclustered.Add(key);
+            // Phase 4 работает с macroCores (результат Phase 3.5 + Phase 3.6)
+            var phase4Buckets = macroCores.Count > 0 ? macroCores
+                : finalClusters.Select(c => new Models.MacroBucket { Name = c.Count > 1 ? c[0] : c[0], Keywords = c.ToList() }).ToList();
 
-            if (_businessSettings.SkipNaming)
+            // Если Phase 4 полностью пропущена
+            if (_businessSettings.SkipPhase4)
+            {
+                Console.WriteLine($"  Фаза 4 пропущена (skipPhase4=true). Имена бакетов = медоиды.");
+                foreach (var bucket in phase4Buckets)
+                    namedClusters[bucket.Name] = bucket.Keywords;
+            }
+            else if (_businessSettings.SkipNaming)
             {
                 Console.WriteLine("  Пропуск AI-обработки (skipNaming=true).");
                 int idx = 0;
-                foreach (var cluster in finalClusters)
+                foreach (var bucket in phase4Buckets)
                 {
                     idx++;
-                    string name = cluster.Count > 1 ? $"Кластер {idx}" : cluster[0];
-                    namedClusters[name] = cluster;
+                    string name = bucket.Keywords.Count > 1 ? $"Кластер {idx}" : bucket.Name;
+                    namedClusters[name] = bucket.Keywords;
+                }
+            }
+            else if (_businessSettings.SkipMerge)
+            {
+                // Режим "только naming": AI придумывает H1-заголовки, не меняя состав
+                Console.WriteLine("  Режим: только naming (skipMerge=true).");
+
+                var namingLines = new List<string>();
+                for (int i = 0; i < phase4Buckets.Count; i++)
+                {
+                    namingLines.Add($"Кластер {i + 1}:");
+                    foreach (var key in phase4Buckets[i].Keywords)
+                        namingLines.Add($"- {key}");
+                    namingLines.Add("");
+                }
+
+                string userMessage = string.Join("\n", namingLines);
+                string systemPrompt = "Ты SEO-специалист. Для каждого кластера придумай H1-заголовок статьи. "
+                    + "НЕ меняй состав кластеров. Верни JSON: [{\"name\": \"H1-заголовок\", \"keywords\": [...]}]. "
+                    + $"Ниша: {_businessSettings.Niche}. Логика: {_businessSettings.ClusteringLogic}.";
+
+                // Выбор провайдера
+                bool useOpenRouter = _phase4Settings.Provider.Equals("openrouter", StringComparison.OrdinalIgnoreCase);
+                string? endpoint = useOpenRouter ? "https://openrouter.ai/api/v1/chat/completions" : null;
+                string? apiKeyOverride = useOpenRouter ? _openRouterSettings.ApiKey : null;
+
+                var phase4Config = new DeepSeekSettings
+                {
+                    ApiKey = _deepSeekSettings.ApiKey,
+                    Model = !string.IsNullOrEmpty(_phase4Settings.Model)
+                        ? _phase4Settings.Model : _deepSeekSettings.Model,
+                    Temperature = _phase4Settings.Temperature ?? _deepSeekSettings.Temperature,
+                    MaxTokens = _phase4Settings.MaxTokens ?? _deepSeekSettings.MaxTokens,
+                    TopP = _deepSeekSettings.TopP,
+                    EnableThinking = _phase4Settings.EnableThinking ?? _deepSeekSettings.EnableThinking,
+                    ReasoningEffort = _phase4Settings.ReasoningEffort ?? _deepSeekSettings.ReasoningEffort,
+                    Stream = _phase4Settings.Stream ?? _deepSeekSettings.Stream
+                };
+
+                if (useOpenRouter)
+                    Console.WriteLine($"  Провайдер: OpenRouter, модель: {phase4Config.Model}");
+
+                var (rawJson, _) = await DeepSeekHelper.GetRawAiContentAsync(
+                    _client, systemPrompt, userMessage, phase4Config,
+                    overrideThinking: true,
+                    overrideReasoningEffort: "high",
+                    endpoint: endpoint,
+                    apiKeyOverride: apiKeyOverride,
+                    skipDeepSeekFields: useOpenRouter);
+
+                // Очищаем ответ от markdown-разметки (```json ... ```)
+                string cleanJson = rawJson?.Trim() ?? "";
+                if (cleanJson.StartsWith("```"))
+                {
+                    int start = cleanJson.IndexOf('\n');
+                    int end = cleanJson.LastIndexOf("```");
+                    if (start > 0 && end > start)
+                        cleanJson = cleanJson[(start + 1)..end].Trim();
+                }
+                bool parsed = false;
+                if (!string.IsNullOrEmpty(cleanJson))
+                {
+                    // Парсим ответ: [{ "name": "...", "keywords": [...] }]
+                    try
+                    {
+                        var geminiArticles = JsonSerializer.Deserialize<List<GeminiArticle>>(cleanJson);
+                        if (geminiArticles != null && geminiArticles.Count > 0)
+                        {
+                            foreach (var article in geminiArticles)
+                                if (!string.IsNullOrEmpty(article.Name) && article.Keywords?.Count > 0)
+                                    namedClusters[article.Name] = article.Keywords;
+                            parsed = true;
+                        }
+                    }
+                    catch { }
+
+                    // Формат 2: [{ "Название": [ключи] }]
+                    if (!parsed)
+                    {
+                        try
+                        {
+                            var flatArticles = JsonSerializer.Deserialize<List<Dictionary<string, List<string>>>>(cleanJson);
+                            if (flatArticles != null && flatArticles.Count > 0)
+                            {
+                                foreach (var article in flatArticles)
+                                    foreach (var kvp in article)
+                                        namedClusters[kvp.Key] = kvp.Value;
+                                parsed = true;
+                            }
+                        }
+                        catch { }
+                    }
+                }
+
+                if (!parsed)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine("  [ОШИБКА] AI не вернул именование. Использую исходные имена.");
+                    Console.ResetColor();
+                    foreach (var bucket in phase4Buckets)
+                        namedClusters[bucket.Name] = bucket.Keywords;
                 }
             }
             else
             {
                 // Формируем входные данные: нумерованные кластеры с ключами
                 var clusterLines = new List<string>();
-                for (int i = 0; i < finalClusters.Count; i++)
+                for (int i = 0; i < phase4Buckets.Count; i++)
                 {
                     clusterLines.Add($"Кластер {i + 1}:");
-                    foreach (var key in finalClusters[i])
+                    foreach (var key in phase4Buckets[i].Keywords)
                         clusterLines.Add($"- {key}");
                     clusterLines.Add("");
                 }
@@ -341,6 +552,26 @@ namespace KeywordClusterizer
             Console.WriteLine($"  [Rescue] Спасено: {rescued}, не удалось: {remaining.Count}");
             unclustered.Clear();
             unclustered.AddRange(remaining);
+        }
+
+        /// <summary>
+        /// Проверяет, что API-ключ OpenRouter работает, выполняя тестовый запрос эмбеддинга.
+        /// </summary>
+        private async Task<bool> TestEmbeddingApiAsync()
+        {
+            try
+            {
+                Console.Write("  [Embed] Проверка API-ключа... ");
+                var result = await _embeddingClient!.GetEmbeddingAsync("test");
+                bool valid = result != null && result.Length > 0 && result.Any(v => v != 0.0f);
+                Console.WriteLine(valid ? "OK" : "ОШИБКА (нулевой вектор)");
+                return valid;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"ОШИБКА: {ex.Message}");
+                return false;
+            }
         }
 
         /// <summary>

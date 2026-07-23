@@ -106,19 +106,46 @@ namespace KeywordClusterizer
                         if (business.TryGetProperty("centroidMergeEnabled", out var cme))
                             businessSettings.CentroidMergeEnabled = cme.GetBoolean();
 
+                        if (business.TryGetProperty("skipPhase4", out var sp4))
+                            businessSettings.SkipPhase4 = sp4.GetBoolean();
+
+                        if (business.TryGetProperty("suppressClusterDisplay", out var scd))
+                            businessSettings.SuppressClusterDisplay = scd.GetBoolean();
+
                         if (business.TryGetProperty("skipNaming", out var sn))
                             businessSettings.SkipNaming = sn.GetBoolean();
 
-                        if (business.TryGetProperty("wordLevelClustering", out var wlc))
+                        if (business.TryGetProperty("skipMerge", out var sm))
+                            businessSettings.SkipMerge = sm.GetBoolean();
+
+                        if (business.TryGetProperty("sentenceLevelClustering", out var slc))
                         {
-                            if (wlc.TryGetProperty("enabled", out var wlce))
-                                businessSettings.WordLevelClusteringEnabled = wlce.GetBoolean();
+                            if (slc.TryGetProperty("enabled", out var slce))
+                                businessSettings.SentenceLevelClusteringEnabled = slce.GetBoolean();
 
-                            if (wlc.TryGetProperty("wordSimThreshold", out var wst))
-                                businessSettings.WordSimThreshold = (float)wst.GetDouble();
+                            if (slc.TryGetProperty("sentenceHacThreshold", out var sht))
+                                businessSettings.SentenceHacThreshold = (float)sht.GetDouble();
+                        }
 
-                            if (wlc.TryGetProperty("hacThreshold", out var ht))
-                                businessSettings.HacThreshold = (float)ht.GetDouble();
+                        if (business.TryGetProperty("macroMerge", out var macroM))
+                        {
+                            if (macroM.TryGetProperty("enabled", out var en))
+                                businessSettings.MacroMergeEnabled = en.GetBoolean();
+
+                            if (macroM.TryGetProperty("representativeMode", out var rm))
+                                businessSettings.RepresentativeMode = rm.GetString() ?? "centroid";
+
+                            if (macroM.TryGetProperty("similarityThreshold", out var st))
+                                businessSettings.MacroMergeThreshold = (float)st.GetDouble();
+                        }
+
+                        if (business.TryGetProperty("rescuePassV2", out var rp2))
+                        {
+                            if (rp2.TryGetProperty("enabled", out var en2))
+                                businessSettings.RescuePassV2Enabled = en2.GetBoolean();
+
+                            if (rp2.TryGetProperty("rescueThreshold", out var rt))
+                                businessSettings.RescueThreshold = (float)rt.GetDouble();
                         }
                     }
 
@@ -307,7 +334,11 @@ namespace KeywordClusterizer
             // 6. Вывод и сохранение результатов
             if (clusters != null && clusters.Count > 0)
             {
-                DisplayClusters(clusters);
+                if (!businessSettings.SuppressClusterDisplay)
+                    DisplayClusters(clusters);
+                else
+                    Console.WriteLine($"\n[INFO] Вывод кластеров подавлен (suppressClusterDisplay=true). Итого: {clusters.Count} кластеров.");
+
                 SaveToCsv(clusters, "clusters.csv");
             }
             else
@@ -554,13 +585,37 @@ namespace KeywordClusterizer
 
         /// <summary>
         /// Сохраняет результаты в CSV-файл (формат для Excel).
+        /// Если файл занят — подбирает имя с суффиксом _1, _2 и т.д.
         /// </summary>
         private static void SaveToCsv(Dictionary<string, List<string>> clusters, string filePath)
         {
+            // Если файл занят — подбираем свободное имя
+            string actualPath = filePath;
+            if (File.Exists(filePath))
+            {
+                try
+                {
+                    // Пробуем открыть на запись — если занят, подбираем новый путь
+                    using var testStream = File.Open(filePath, FileMode.Open, FileAccess.Write, FileShare.None);
+                }
+                catch (IOException)
+                {
+                    string dir = Path.GetDirectoryName(filePath) ?? ".";
+                    string nameWithoutExt = Path.GetFileNameWithoutExtension(filePath);
+                    string ext = Path.GetExtension(filePath);
+                    int suffix = 1;
+                    do
+                    {
+                        actualPath = Path.Combine(dir, $"{nameWithoutExt}_{suffix}{ext}");
+                        suffix++;
+                    } while (File.Exists(actualPath));
+                }
+            }
+
             try
             {
                 // Используем UTF8 с BOM, чтобы Excel корректно понимал кириллицу
-                using var writer = new StreamWriter(filePath, false, new UTF8Encoding(true));
+                using var writer = new StreamWriter(actualPath, false, new UTF8Encoding(true));
 
                 // Заголовки (используем точку с запятой, стандартно для русского Excel)
                 writer.WriteLine("Кластер;Ключевое слово");
@@ -576,7 +631,8 @@ namespace KeywordClusterizer
                 }
 
                 Console.ForegroundColor = ConsoleColor.Cyan;
-                Console.WriteLine($"\n[УСПЕХ] Результаты успешно сохранены в файл: {filePath}");
+                string suffixMsg = actualPath != filePath ? $" (файл '{filePath}' был занят)" : "";
+                Console.WriteLine($"\n[УСПЕХ] Результаты сохранены: {actualPath}{suffixMsg}");
                 Console.ResetColor();
             }
             catch (Exception ex)

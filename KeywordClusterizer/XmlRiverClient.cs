@@ -136,14 +136,18 @@ namespace KeywordClusterizer
 
             if (cachedCount == keywords.Count)
             {
-                // Все ключи из кэша — достаточно одной строки
+                // Все ключи из кэша — возвращаем без API-запросов
                 Console.WriteLine($"    [SERP] Загружено {keywords.Count} записей из кэша.");
+                foreach (var key in keywords)
+                {
+                    if (_cache!.TryGet(key, out var cached))
+                        results[key] = cached!;
+                }
+                return results.ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
             }
-            else
-            {
-                int apiCount = keywords.Count - cachedCount;
-                Console.WriteLine($"    [SERP] Кэш: {cachedCount}, API: {apiCount} запросов ({maxConcurrency} потоков)...");
-            }
+
+            int apiCount = keywords.Count - cachedCount;
+            Console.WriteLine($"    [SERP] Кэш: {cachedCount}, API: {apiCount} запросов ({maxConcurrency} потоков)...");
 
             await Parallel.ForEachAsync(keywords, async (key, ct) =>
             {
