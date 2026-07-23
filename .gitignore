@@ -30,9 +30,17 @@ KeywordClusterizer/embeddings_cache.json
 
 # Output
 KeywordClusterizer/clusters.csv
+KeywordClusterizer/clusters_*.csv
 KeywordClusterizer/cleaned.txt
 KeywordClusterizer/discarded.txt
 KeywordClusterizer/branded.txt
 
+# Plan files
+plans/
+
 # Self-contained publish
 publish/
+KeywordClusterizer/publish/
+
+# Input keywords
+KeywordClusterizer/keywords.txt
