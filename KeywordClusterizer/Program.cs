@@ -732,7 +732,7 @@ namespace KeywordClusterizer
                     sb.AppendLine($"{safeGroup}{separator}{safeKeywords}");
                 }
 
-                File.WriteAllText(actualOutput, sb.ToString(), Encoding.GetEncoding(1251));
+                File.WriteAllText(actualOutput, sb.ToString(), new UTF8Encoding(true));
 
                 ConsoleUtils.WriteLine($"\n[УСПЕХ] Сохранено: {actualOutput} ({groups.Count} строк)", ConsoleColor.Cyan);
             }
