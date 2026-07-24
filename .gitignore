@@ -44,3 +44,6 @@ KeywordClusterizer/publish/
 
 # Input keywords
 KeywordClusterizer/keywords.txt
+
+# Failed keys from cleaner
+KeywordClusterizer/failed.txt
