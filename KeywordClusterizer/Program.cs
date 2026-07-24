@@ -646,15 +646,21 @@ namespace KeywordClusterizer
         {
             Console.WriteLine("\n=== Объединение групп в CSV ===");
 
-            // 1. Запрос входного файла
-            Console.Write($"\nПуть к входному CSV [clusters.csv]: ");
-            string? inputPath = Console.ReadLine()?.Trim();
-            if (string.IsNullOrWhiteSpace(inputPath)) inputPath = "clusters.csv";
-
-            if (!File.Exists(inputPath))
+            // 1. Запрос входного файла (с возможностью повтора)
+            string inputPath;
+            while (true)
             {
+                Console.Write($"\nПуть к входному CSV [clusters.csv]: ");
+                inputPath = Console.ReadLine()?.Trim() ?? "";
+                if (string.IsNullOrWhiteSpace(inputPath)) inputPath = "clusters.csv";
+
+                if (File.Exists(inputPath))
+                    break;
+
                 ConsoleUtils.WriteLine($"[ОШИБКА] Файл '{inputPath}' не найден.", ConsoleColor.Red);
-                return;
+                Console.Write("  [Enter] — повторить, [Q] — выход: ");
+                var key = Console.ReadLine()?.Trim().ToUpperInvariant();
+                if (key == "Q") return;
             }
 
             // 2. Разделитель
