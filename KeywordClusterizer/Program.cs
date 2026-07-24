@@ -506,8 +506,8 @@ namespace KeywordClusterizer
             if (int.TryParse(threadsInput, out int parsedThreads) && parsedThreads > 0)
                 maxConcurrency = parsedThreads;
 
-            // 7. Настройка HTTP клиента
-            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(3) };
+            // 7. Настройка HTTP клиента (30 мин — большие пулы до 1000 ключей обрабатываются долго)
+            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(30) };
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", deepSeekSettings.ApiKey);
 
