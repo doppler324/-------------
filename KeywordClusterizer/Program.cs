@@ -716,8 +716,8 @@ namespace KeywordClusterizer
 
             try
             {
-                // Windows-1251 для совместимости с Excel
-                using var writer = new StreamWriter(actualOutput, false, Encoding.GetEncoding(1251));
+                // ASCII (без BOM) — совместимость с любыми редакторами
+                using var writer = new StreamWriter(actualOutput, false, Encoding.ASCII);
                 writer.WriteLine("Группа;Ключевые слова");
 
                 foreach (var group in groups)
