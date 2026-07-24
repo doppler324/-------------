@@ -808,8 +808,10 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
-        /// Определяет кодировку CSV-файла: проверяет BOM (UTF-8),
-        /// иначе использует системную кодировку (ANSI/Windows-1251 на русской Windows).
+        /// Определяет кодировку CSV-файла:
+        /// 1. BOM (EF BB BF) -> UTF-8
+        /// 2. Иначе пробует UTF-8, проверяет на наличие замен (U+FFFD)
+        /// 3. Если есть замены или нечитаемые символы — fallback на Windows-1251
         /// </summary>
         private static Encoding DetectCsvEncoding(string path)
         {
@@ -817,14 +819,29 @@ namespace KeywordClusterizer
             using (var fs = File.OpenRead(path))
             {
                 if (fs.Read(header, 0, 3) < 3)
-                    return Encoding.Default; // файл меньше 3 байт — системная кодировка
+                    return Encoding.UTF8;
             }
 
             // UTF-8 BOM: EF BB BF
             if (header[0] == 0xEF && header[1] == 0xBB && header[2] == 0xBF)
                 return Encoding.UTF8;
 
-            return Encoding.Default; // Windows-1251 на русской системе
+            // Пробуем UTF-8. Если после декодирования есть символы замены (U+FFFD) —
+            // значит, файл не в UTF-8, пробуем Windows-1251.
+            byte[] sample = new byte[Math.Min(4096, new FileInfo(path).Length)];
+            using (var fs = File.OpenRead(path))
+            {
+                fs.Read(sample, 0, sample.Length);
+            }
+
+            string utf8Result = Encoding.UTF8.GetString(sample);
+            if (utf8Result.Contains('\uFFFD'))
+            {
+                try { return Encoding.GetEncoding(1251); }
+                catch { return Encoding.UTF8; }
+            }
+
+            return Encoding.UTF8;
         }
     }
 }
