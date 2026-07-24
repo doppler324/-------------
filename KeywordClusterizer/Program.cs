@@ -716,8 +716,8 @@ namespace KeywordClusterizer
 
             try
             {
-                // ASCII (без BOM) — совместимость с любыми редакторами
-                using var writer = new StreamWriter(actualOutput, false, Encoding.ASCII);
+                // UTF-8 с BOM — кириллица сохраняется, Excel открывает без проблем
+                using var writer = new StreamWriter(actualOutput, false, new UTF8Encoding(true));
                 writer.WriteLine("Группа;Ключевые слова");
 
                 foreach (var group in groups)
