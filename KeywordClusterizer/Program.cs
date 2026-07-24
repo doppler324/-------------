@@ -666,8 +666,9 @@ namespace KeywordClusterizer
             // 2. Разделитель — всегда точка с запятой
             char separator = ';';
 
-            // 3. Чтение и группировка
-            var lines = File.ReadAllLines(inputPath);
+            // 3. Чтение с автоопределением кодировки (BOM → UTF-8, иначе система/1251)
+            var encoding = DetectCsvEncoding(inputPath);
+            var lines = File.ReadAllLines(inputPath, encoding);
             var groups = new Dictionary<string, List<string>>();
 
             // Пропускаем заголовок (первая строка)
@@ -801,6 +802,26 @@ namespace KeywordClusterizer
                 return $"\"{field.Replace("\"", "\"\"")}\"";
             }
             return field;
+        }
+
+        /// <summary>
+        /// Определяет кодировку CSV-файла: проверяет BOM (UTF-8),
+        /// иначе использует системную кодировку (ANSI/Windows-1251 на русской Windows).
+        /// </summary>
+        private static Encoding DetectCsvEncoding(string path)
+        {
+            byte[] header = new byte[3];
+            using (var fs = File.OpenRead(path))
+            {
+                if (fs.Read(header, 0, 3) < 3)
+                    return Encoding.Default; // файл меньше 3 байт — системная кодировка
+            }
+
+            // UTF-8 BOM: EF BB BF
+            if (header[0] == 0xEF && header[1] == 0xBB && header[2] == 0xBF)
+                return Encoding.UTF8;
+
+            return Encoding.Default; // Windows-1251 на русской системе
         }
     }
 }
