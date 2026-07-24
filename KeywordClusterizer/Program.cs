@@ -717,19 +717,19 @@ namespace KeywordClusterizer
 
             try
             {
-                // ASCII — совместимость с любыми инструментами
-                using var writer = new StreamWriter(actualOutput, false, Encoding.ASCII);
-                writer.WriteLine("Группа;Ключевые слова");
+                // Собираем строки, пишем через File.WriteAllText с ASCII
+                var sb = new StringBuilder();
+                sb.AppendLine("Группа;Ключевые слова");
 
                 foreach (var group in groups)
                 {
-                    // Склеиваем ключи через запятую + пробел
                     string mergedKeywords = string.Join(", ", group.Value);
-                    // Экранируем: если есть разделитель или кавычки — обрамляем в кавычки
                     string safeGroup = EscapeCsvField(group.Key, separator);
                     string safeKeywords = EscapeCsvField(mergedKeywords, separator);
-                    writer.WriteLine($"{safeGroup}{separator}{safeKeywords}");
+                    sb.AppendLine($"{safeGroup}{separator}{safeKeywords}");
                 }
+
+                File.WriteAllText(actualOutput, sb.ToString(), Encoding.ASCII);
 
                 ConsoleUtils.WriteLine($"\n[УСПЕХ] Сохранено: {actualOutput} ({groups.Count} строк)", ConsoleColor.Cyan);
             }
