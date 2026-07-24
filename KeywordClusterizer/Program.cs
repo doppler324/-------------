@@ -663,10 +663,8 @@ namespace KeywordClusterizer
                 if (key == "Q") return;
             }
 
-            // 2. Разделитель
-            Console.Write($"Разделитель [;]: ");
-            string? sepInput = Console.ReadLine()?.Trim();
-            char separator = string.IsNullOrWhiteSpace(sepInput) ? ';' : sepInput[0];
+            // 2. Разделитель — всегда точка с запятой
+            char separator = ';';
 
             // 3. Чтение и группировка
             var lines = File.ReadAllLines(inputPath);
