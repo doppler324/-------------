@@ -21,11 +21,14 @@ namespace KeywordClusterizer
             Console.WriteLine("\nВыберите режим работы:");
             Console.WriteLine("  1 - Кластеризация ключевых слов");
             Console.WriteLine("  2 - Чистка ключевых запросов");
-            Console.Write("\nВаш выбор (1/2): ");
+            Console.WriteLine("  3 - Объединить группы в CSV");
+            Console.Write("\nВаш выбор (1/2/3): ");
             string modeChoice = Console.ReadLine()?.Trim() ?? "1";
 
             if (modeChoice == "2")
                 await RunCleanerModeAsync();
+            else if (modeChoice == "3")
+                RunCsvGroupMerge();
             else
                 await RunClusterizationModeAsync();
 
@@ -632,6 +635,167 @@ namespace KeywordClusterizer
                 Console.WriteLine($"\n[ОШИБКА] Не удалось сохранить CSV файл: {ex.Message}");
                 Console.ResetColor();
             }
+        }
+
+        /// <summary>
+        /// Режим 3: объединение строк одного кластера в одну строку CSV.
+        /// Читает CSV вида "Кластер;Ключевое слово", группирует по кластеру
+        /// и сохраняет как "Группа;Ключевые слова" (все ключи группы через запятую).
+        /// </summary>
+        static void RunCsvGroupMerge()
+        {
+            Console.WriteLine("\n=== Объединение групп в CSV ===");
+
+            // 1. Запрос входного файла
+            Console.Write($"\nПуть к входному CSV [clusters.csv]: ");
+            string? inputPath = Console.ReadLine()?.Trim();
+            if (string.IsNullOrWhiteSpace(inputPath)) inputPath = "clusters.csv";
+
+            if (!File.Exists(inputPath))
+            {
+                ConsoleUtils.WriteLine($"[ОШИБКА] Файл '{inputPath}' не найден.", ConsoleColor.Red);
+                return;
+            }
+
+            // 2. Разделитель
+            Console.Write($"Разделитель [;]: ");
+            string? sepInput = Console.ReadLine()?.Trim();
+            char separator = string.IsNullOrWhiteSpace(sepInput) ? ';' : sepInput[0];
+
+            // 3. Чтение и группировка
+            var lines = File.ReadAllLines(inputPath);
+            var groups = new Dictionary<string, List<string>>();
+
+            // Пропускаем заголовок (первая строка)
+            for (int i = 1; i < lines.Length; i++)
+            {
+                string line = lines[i].Trim();
+                if (string.IsNullOrWhiteSpace(line)) continue;
+
+                string[] parts = SplitCsvLine(line, separator);
+                if (parts.Length < 2) continue;
+
+                string groupName = parts[0].Trim().Trim('"');
+                string keyword = parts[1].Trim().Trim('"');
+
+                if (!groups.ContainsKey(groupName))
+                    groups[groupName] = new List<string>();
+
+                groups[groupName].Add(keyword);
+            }
+
+            if (groups.Count == 0)
+            {
+                ConsoleUtils.WriteLine("[ОШИБКА] Не найдено ни одной группы.", ConsoleColor.Red);
+                return;
+            }
+
+            int totalKeywords = groups.Sum(g => g.Value.Count);
+            Console.WriteLine($"\nПрочитано {totalKeywords} ключей, {groups.Count} групп.");
+
+            // 4. Сохранение
+            string outputPath = Path.Combine(
+                Path.GetDirectoryName(inputPath) ?? ".",
+                $"{Path.GetFileNameWithoutExtension(inputPath)}_merged.csv");
+
+            // Если выходной файл уже существует — подбираем суффикс
+            string actualOutput = outputPath;
+            int suffix = 1;
+            while (File.Exists(actualOutput))
+            {
+                string name = Path.GetFileNameWithoutExtension(outputPath);
+                string ext = Path.GetExtension(outputPath);
+                string dir = Path.GetDirectoryName(outputPath) ?? ".";
+                actualOutput = Path.Combine(dir, $"{name}_{suffix}{ext}");
+                suffix++;
+            }
+
+            try
+            {
+                using var writer = new StreamWriter(actualOutput, false, new UTF8Encoding(true));
+                writer.WriteLine("Группа;Ключевые слова");
+
+                foreach (var group in groups)
+                {
+                    // Склеиваем ключи через запятую + пробел
+                    string mergedKeywords = string.Join(", ", group.Value);
+                    // Экранируем: если есть разделитель или кавычки — обрамляем в кавычки
+                    string safeGroup = EscapeCsvField(group.Key, separator);
+                    string safeKeywords = EscapeCsvField(mergedKeywords, separator);
+                    writer.WriteLine($"{safeGroup}{separator}{safeKeywords}");
+                }
+
+                ConsoleUtils.WriteLine($"\n[УСПЕХ] Сохранено: {actualOutput} ({groups.Count} строк)", ConsoleColor.Cyan);
+            }
+            catch (Exception ex)
+            {
+                ConsoleUtils.WriteLine($"\n[ОШИБКА] Не удалось сохранить: {ex.Message}", ConsoleColor.Red);
+            }
+        }
+
+        /// <summary>
+        /// Разбивает CSV-строку на поля с учётом кавычек.
+        /// Поддерживает экранирование "" внутри кавычек.
+        /// </summary>
+        private static string[] SplitCsvLine(string line, char separator)
+        {
+            var fields = new List<string>();
+            int i = 0;
+            while (i < line.Length)
+            {
+                if (line[i] == '"')
+                {
+                    // Поле в кавычках
+                    i++; // пропускаем открывающую кавычку
+                    var sb = new StringBuilder();
+                    while (i < line.Length)
+                    {
+                        if (line[i] == '"')
+                        {
+                            if (i + 1 < line.Length && line[i + 1] == '"')
+                            {
+                                sb.Append('"');
+                                i += 2;
+                            }
+                            else
+                            {
+                                i++; // закрывающая кавычка
+                                break;
+                            }
+                        }
+                        else
+                        {
+                            sb.Append(line[i]);
+                            i++;
+                        }
+                    }
+                    fields.Add(sb.ToString());
+                    // Пропускаем разделитель после поля
+                    if (i < line.Length && line[i] == separator) i++;
+                }
+                else
+                {
+                    // Обычное поле до разделителя или конца строки
+                    int start = i;
+                    while (i < line.Length && line[i] != separator)
+                        i++;
+                    fields.Add(line[start..i]);
+                    if (i < line.Length && line[i] == separator) i++;
+                }
+            }
+            return fields.ToArray();
+        }
+
+        /// <summary>
+        /// Экранирует поле для CSV: если содержит разделитель, кавычку или перевод строки — обрамляет в кавычки.
+        /// </summary>
+        private static string EscapeCsvField(string field, char separator)
+        {
+            if (field.Contains(separator) || field.Contains('"') || field.Contains('\n') || field.Contains('\r'))
+            {
+                return $"\"{field.Replace("\"", "\"\"")}\"";
+            }
+            return field;
         }
     }
 }
