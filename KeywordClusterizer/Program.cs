@@ -15,6 +15,9 @@ namespace KeywordClusterizer
     {
         static async Task Main(string[] args)
         {
+            // Регистрация кодовых страниц (Windows-1251 и др.) для .NET Core/.NET 5+
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
             Console.WriteLine("=== Кластеризатор ключевых слов ===");
 
             // === Меню выбора режима ===
@@ -729,7 +732,7 @@ namespace KeywordClusterizer
                     sb.AppendLine($"{safeGroup}{separator}{safeKeywords}");
                 }
 
-                File.WriteAllBytes(actualOutput, Encoding.ASCII.GetBytes(sb.ToString()));
+                File.WriteAllText(actualOutput, sb.ToString(), Encoding.GetEncoding(1251));
 
                 ConsoleUtils.WriteLine($"\n[УСПЕХ] Сохранено: {actualOutput} ({groups.Count} строк)", ConsoleColor.Cyan);
             }

@@ -13,5 +13,8 @@
     <Content Include="settings.json" CopyToPublishDirectory="PreserveNewest" />
     <Content Include="keywords.txt" CopyToPublishDirectory="PreserveNewest" />
   </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Encoding.CodePages" Version="10.0.10" />
+  </ItemGroup>
 
 </Project>
