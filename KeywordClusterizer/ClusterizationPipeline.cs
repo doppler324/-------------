@@ -302,6 +302,9 @@ namespace KeywordClusterizer
                 // Режим "только naming": AI придумывает H1-заголовки, не меняя состав
                 Console.WriteLine("  Режим: только naming (skipMerge=true).");
 
+                // Передаём AI только несколько примеров ключей из каждого кластера (для контекста),
+                // AI возвращает только названия, ключи берём из исходных phase4Buckets
+                int sampleSize = Math.Min(3, phase4Buckets.Min(b => b.Keywords.Count));
                 var namingLines = new List<string>();
                 int progressLine = Console.CursorTop;
                 int lineWidth = Console.WindowWidth - 1;
@@ -310,15 +313,20 @@ namespace KeywordClusterizer
                     Console.SetCursorPosition(0, progressLine);
                     Console.Write(($"  [Progress] {i + 1}/{phase4Buckets.Count} — \"{phase4Buckets[i].Name}\"").PadRight(lineWidth).Substring(0, lineWidth));
                     namingLines.Add($"Кластер {i + 1}:");
-                    foreach (var key in phase4Buckets[i].Keywords)
+                    // Только первые sampleSize ключей для контекста
+                    var samples = phase4Buckets[i].Keywords.Take(sampleSize).ToList();
+                    foreach (var key in samples)
                         namingLines.Add($"- {key}");
+                    if (phase4Buckets[i].Keywords.Count > sampleSize)
+                        namingLines.Add($"- ... и ещё {phase4Buckets[i].Keywords.Count - sampleSize} ключей");
                     namingLines.Add("");
                 }
                 Console.WriteLine();
 
                 string userMessage = string.Join("\n", namingLines);
                 string systemPrompt = "Ты SEO-специалист. Для каждого кластера придумай H1-заголовок статьи. "
-                    + "НЕ меняй состав кластеров. Верни JSON: [{\"name\": \"H1-заголовок\", \"keywords\": [...]}]. "
+                    + "Верни ТОЛЬКО массив названий в том же порядке: [\"Название 1\", \"Название 2\", ...]. "
+                    + "НЕ добавляй ключи, НЕ меняй порядок. "
                     + $"Ниша: {_businessSettings.Niche}. Логика: {_businessSettings.ClusteringLogic}.";
 
                 // Выбор провайдера
@@ -352,7 +360,7 @@ namespace KeywordClusterizer
                     skipDeepSeekFields: useOpenRouter);
                 Console.WriteLine("Готово.");
 
-                // Очищаем ответ от markdown-разметки (```json ... ```)
+                // Парсим ответ: ожидаем массив строк ["Название 1", "Название 2", ...]
                 string cleanJson = rawJson?.Trim() ?? "";
                 if (cleanJson.StartsWith("```"))
                 {
@@ -361,39 +369,37 @@ namespace KeywordClusterizer
                     if (start > 0 && end > start)
                         cleanJson = cleanJson[(start + 1)..end].Trim();
                 }
+
                 bool parsed = false;
                 if (!string.IsNullOrEmpty(cleanJson))
                 {
-                    // Парсим ответ: [{ "name": "...", "keywords": [...] }]
                     try
                     {
-                        var geminiArticles = JsonSerializer.Deserialize<List<GeminiArticle>>(cleanJson);
-                        if (geminiArticles != null && geminiArticles.Count > 0)
+                        var names = JsonSerializer.Deserialize<List<string>>(cleanJson);
+                        if (names != null && names.Count > 0)
                         {
-                            foreach (var article in geminiArticles)
-                                if (!string.IsNullOrEmpty(article.Name) && article.Keywords?.Count > 0)
-                                    namedClusters[article.Name] = article.Keywords;
+                            int count = Math.Min(names.Count, phase4Buckets.Count);
+                            for (int i = 0; i < count; i++)
+                            {
+                                string h1 = string.IsNullOrWhiteSpace(names[i])
+                                    ? phase4Buckets[i].Name
+                                    : names[i].Trim();
+                                namedClusters[h1] = phase4Buckets[i].Keywords;
+                            }
                             parsed = true;
+
+                            if (names.Count < phase4Buckets.Count)
+                            {
+                                Console.ForegroundColor = ConsoleColor.Yellow;
+                                Console.WriteLine($"  [WARN] AI вернул {names.Count} названий из {phase4Buckets.Count}. " +
+                                    $"Оставшиеся {phase4Buckets.Count - names.Count} — с именами по умолчанию.");
+                                Console.ResetColor();
+                                for (int i = names.Count; i < phase4Buckets.Count; i++)
+                                    namedClusters[phase4Buckets[i].Name] = phase4Buckets[i].Keywords;
+                            }
                         }
                     }
                     catch { }
-
-                    // Формат 2: [{ "Название": [ключи] }]
-                    if (!parsed)
-                    {
-                        try
-                        {
-                            var flatArticles = JsonSerializer.Deserialize<List<Dictionary<string, List<string>>>>(cleanJson);
-                            if (flatArticles != null && flatArticles.Count > 0)
-                            {
-                                foreach (var article in flatArticles)
-                                    foreach (var kvp in article)
-                                        namedClusters[kvp.Key] = kvp.Value;
-                                parsed = true;
-                            }
-                        }
-                        catch { }
-                    }
                 }
 
                 if (!parsed)
