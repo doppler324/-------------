@@ -131,26 +131,41 @@ namespace KeywordClusterizer
             }
             else
             {
-                // Тестовый запрос: проверяем, что ключ работает
-                bool apiKeyValid = await TestEmbeddingApiAsync();
-                if (!apiKeyValid)
+                // Собираем все фразы из SERP-кластеров
+                var allSerpPhrases = serpClusters
+                    .Where(c => c.Count > 0)
+                    .SelectMany(c => c)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                // Проверяем кэш: какие фразы уже есть, какие нужно запросить
+                var uncached = _embeddingClient.GetMissingFromCache(allSerpPhrases);
+                bool needApiRequest = uncached.Count > 0;
+                bool apiAvailable = false;
+
+                if (needApiRequest)
                 {
-                    Console.ForegroundColor = ConsoleColor.Red;
-                    Console.WriteLine("  [ОШИБКА] API-ключ OpenRouter не работает. Пропуск Phase 3.");
-                    Console.ResetColor();
-                    finalClusters.AddRange(serpClusters);
+                    Console.WriteLine($"  [Embed] В кэше {allSerpPhrases.Count - uncached.Count}/{allSerpPhrases.Count}. Нужно запросить {uncached.Count}.");
+
+                    apiAvailable = await TestEmbeddingApiAsync();
+                    if (!apiAvailable)
+                    {
+                        Console.ForegroundColor = ConsoleColor.Red;
+                        Console.WriteLine("  [ОШИБКА] API-ключ OpenRouter не работает. Пропуск Phase 3.");
+                        Console.ResetColor();
+                        finalClusters.AddRange(serpClusters);
+                    }
                 }
                 else
                 {
-                    // Предзагружаем ВСЕ эмбеддинги фраз одним batch-запросом
-                    // (чтобы Phase 3.5 не делала повторных запросов к API)
-                    var allSerpPhrases = serpClusters
-                        .Where(c => c.Count > 0)
-                        .SelectMany(c => c)
-                        .Distinct(StringComparer.OrdinalIgnoreCase)
-                        .ToList();
+                    Console.WriteLine($"  [Embed] Все {allSerpPhrases.Count} фраз уже в кэше. API-запрос не нужен.");
+                    apiAvailable = true; // кэша достаточно, API не нужен
+                }
 
-                    Console.WriteLine($"  [Embed] Предзагрузка {allSerpPhrases.Count} эмбеддингов...");
+                // Загружаем эмбеддинги (из кэша + если API доступен — дозапрашиваем)
+                if (!needApiRequest || apiAvailable)
+                {
+                    Console.WriteLine($"  [Embed] Загрузка {allSerpPhrases.Count} эмбеддингов...");
                     var phraseEmbeddings = await _embeddingClient.GetEmbeddingsBatchAsync(allSerpPhrases);
 
                     foreach (var cluster in serpClusters)
@@ -164,7 +179,7 @@ namespace KeywordClusterizer
                         int beforeSplit = finalClusters.Count;
                         var subClusters = await sentenceLevelClusterizer.ClusterizeAsync(
                             cluster,
-                            // Используем уже предзагруженные эмбеддинги
+                            // Используем уже загруженные эмбеддинги
                             (phrases) => System.Threading.Tasks.Task.FromResult(
                                 phrases.Where(p => phraseEmbeddings.ContainsKey(p))
                                     .ToDictionary(p => p, p => phraseEmbeddings[p])));
@@ -280,13 +295,18 @@ namespace KeywordClusterizer
                 Console.WriteLine("  Режим: только naming (skipMerge=true).");
 
                 var namingLines = new List<string>();
+                int progressLine = Console.CursorTop;
+                int lineWidth = Console.WindowWidth - 1;
                 for (int i = 0; i < phase4Buckets.Count; i++)
                 {
+                    Console.SetCursorPosition(0, progressLine);
+                    Console.Write(($"  [Progress] {i + 1}/{phase4Buckets.Count} — \"{phase4Buckets[i].Name}\"").PadRight(lineWidth).Substring(0, lineWidth));
                     namingLines.Add($"Кластер {i + 1}:");
                     foreach (var key in phase4Buckets[i].Keywords)
                         namingLines.Add($"- {key}");
                     namingLines.Add("");
                 }
+                Console.WriteLine();
 
                 string userMessage = string.Join("\n", namingLines);
                 string systemPrompt = "Ты SEO-специалист. Для каждого кластера придумай H1-заголовок статьи. "
@@ -314,6 +334,7 @@ namespace KeywordClusterizer
                 if (useOpenRouter)
                     Console.WriteLine($"  Провайдер: OpenRouter, модель: {phase4Config.Model}");
 
+                Console.Write("  [AI] Ожидание ответа нейросети... ");
                 var (rawJson, _) = await DeepSeekHelper.GetRawAiContentAsync(
                     _client, systemPrompt, userMessage, phase4Config,
                     overrideThinking: true,
@@ -321,6 +342,7 @@ namespace KeywordClusterizer
                     endpoint: endpoint,
                     apiKeyOverride: apiKeyOverride,
                     skipDeepSeekFields: useOpenRouter);
+                Console.WriteLine("Готово.");
 
                 // Очищаем ответ от markdown-разметки (```json ... ```)
                 string cleanJson = rawJson?.Trim() ?? "";
@@ -379,13 +401,18 @@ namespace KeywordClusterizer
             {
                 // Формируем входные данные: нумерованные кластеры с ключами
                 var clusterLines = new List<string>();
+                int progressLine = Console.CursorTop;
+                int lineWidth = Console.WindowWidth - 1;
                 for (int i = 0; i < phase4Buckets.Count; i++)
                 {
+                    Console.SetCursorPosition(0, progressLine);
+                    Console.Write(($"  [Progress] {i + 1}/{phase4Buckets.Count} — \"{phase4Buckets[i].Name}\"").PadRight(lineWidth).Substring(0, lineWidth));
                     clusterLines.Add($"Кластер {i + 1}:");
                     foreach (var key in phase4Buckets[i].Keywords)
                         clusterLines.Add($"- {key}");
                     clusterLines.Add("");
                 }
+                Console.WriteLine();
 
                 string userMessage = string.Join("\n", clusterLines);
                 string instructionText = LoadInstruction("instructions/phase4_ai_merge.txt");
@@ -414,6 +441,7 @@ namespace KeywordClusterizer
                 if (useOpenRouter)
                     Console.WriteLine($"  Провайдер: OpenRouter, модель: {phase4Config.Model}");
 
+                Console.Write("  [AI] Ожидание ответа нейросети... ");
                 var (rawJson, _) = await DeepSeekHelper.GetRawAiContentAsync(
                     _client, systemPrompt, userMessage, phase4Config,
                     overrideThinking: true,
@@ -421,6 +449,7 @@ namespace KeywordClusterizer
                     endpoint: endpoint,
                     apiKeyOverride: apiKeyOverride,
                     skipDeepSeekFields: useOpenRouter);
+                Console.WriteLine("Готово.");
 
                 bool parsed = false;
                 if (!string.IsNullOrEmpty(rawJson))
@@ -556,22 +585,14 @@ namespace KeywordClusterizer
 
         /// <summary>
         /// Проверяет, что API-ключ OpenRouter работает, выполняя тестовый запрос эмбеддинга.
+        /// Не использует кэш — всегда реальный запрос к API.
         /// </summary>
         private async Task<bool> TestEmbeddingApiAsync()
         {
-            try
-            {
-                Console.Write("  [Embed] Проверка API-ключа... ");
-                var result = await _embeddingClient!.GetEmbeddingAsync("test");
-                bool valid = result != null && result.Length > 0 && result.Any(v => v != 0.0f);
-                Console.WriteLine(valid ? "OK" : "ОШИБКА (нулевой вектор)");
-                return valid;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"ОШИБКА: {ex.Message}");
-                return false;
-            }
+            Console.Write("  [Embed] Проверка API-ключа (реальный запрос, без кэша)... ");
+            bool valid = await _embeddingClient!.TestApiAsync("test");
+            Console.WriteLine(valid ? "OK" : "ОШИБКА (нулевой вектор/недоступно)");
+            return valid;
         }
 
         /// <summary>

@@ -151,7 +151,58 @@ namespace KeywordClusterizer.Services
         }
 
         /// <summary>
-        /// Получает эмбеддинги для списка текстов батч-запросом.
+        /// Проверяет API без использования кэша (реальный запрос к OpenRouter).
+        /// Возвращает true, если ответ содержит ненулевой эмбеддинг.
+        /// </summary>
+        public async Task<bool> TestApiAsync(string testText = "test")
+        {
+            try
+            {
+                var embeddings = await RequestEmbeddingsAsync(new[] { testText });
+                if (embeddings.TryGetValue(testText, out var vector))
+                {
+                    bool valid = vector != null && vector.Length > 0 && vector.Any(v => Math.Abs(v) > 1e-10f);
+                    return valid;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.ForegroundColor = ConsoleColor.Red;
+                Console.WriteLine($"    [Embed] TestApiAsync: {ex.GetType().Name}: {ex.Message}");
+                Console.ResetColor();
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Максимальный размер одного батч-запроса (число текстов).
+        /// OpenRouter/OpenAI обычно лимитируют ~2048 эмбеддингов за запрос,
+        /// но тело запроса может быть слишком большим при длинных фразах.
+        /// </summary>
+        private const int MaxBatchSize = 64;
+
+        /// <summary>
+        /// Проверяет, какие тексты отсутствуют в кэше (без API-запроса).
+        /// </summary>
+        public List<string> GetMissingFromCache(List<string> texts)
+        {
+            LoadCache();
+
+            var missing = new List<string>();
+            lock (_lock)
+            {
+                foreach (var text in texts)
+                {
+                    if (_cache == null || !_cache.ContainsKey(text))
+                        missing.Add(text);
+                }
+            }
+            return missing;
+        }
+
+        /// <summary>
+        /// Получает эмбеддинги для списка текстов батч-запросами (с чанкингом).
         /// Пропускает тексты, уже имеющиеся в кэше.
         /// </summary>
         public async Task<Dictionary<string, float[]>> GetEmbeddingsBatchAsync(List<string> texts)
@@ -173,34 +224,60 @@ namespace KeywordClusterizer.Services
                 }
             }
 
-            // Остальные запрашиваем через API
+            // Остальные запрашиваем через API, разбивая на чанки
             if (missingTexts.Count > 0)
             {
-                Console.WriteLine($"    [Embed] Запрос {missingTexts.Count} эмбеддингов через OpenRouter...");
+                int totalMissing = missingTexts.Count;
+                int failedCount = 0;
+                int totalChunks = (int)Math.Ceiling((double)totalMissing / MaxBatchSize);
 
-                var apiResult = await RequestEmbeddingsAsync(missingTexts);
+                Console.WriteLine($"    [Embed] Запрос {totalMissing} эмбеддингов через OpenRouter (чанков: {totalChunks}, макс. {MaxBatchSize}/чанк)...");
 
-                // Сохраняем в кэш
-                lock (_lock)
+                for (int chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++)
                 {
-                    foreach (var kvp in apiResult)
+                    int start = chunkIdx * MaxBatchSize;
+                    int count = Math.Min(MaxBatchSize, totalMissing - start);
+                    var chunk = missingTexts.GetRange(start, count);
+
+                    Console.WriteLine($"      Чанк {chunkIdx + 1}/{totalChunks}: {count} фраз...");
+                    var apiResult = await RequestEmbeddingsAsync(chunk);
+
+                    // Сохраняем в кэш успешные
+                    int chunkSucceeded = 0;
+                    lock (_lock)
                     {
-                        result[kvp.Key] = kvp.Value;
-                        if (_cache != null)
-                            _cache[kvp.Key] = kvp.Value;
+                        foreach (var kvp in apiResult)
+                        {
+                            result[kvp.Key] = kvp.Value;
+                            chunkSucceeded++;
+                            if (_cache != null)
+                                _cache[kvp.Key] = kvp.Value;
+                        }
+                    }
+
+                    if (apiResult.Count < count)
+                    {
+                        int chunkFailed = count - apiResult.Count;
+                        failedCount += chunkFailed;
+                        Console.ForegroundColor = ConsoleColor.Yellow;
+                        Console.WriteLine($"      [Embed] Чанк {chunkIdx + 1}: {chunkFailed}/{count} не получены.");
+                        Console.ResetColor();
                     }
                 }
 
                 // Для текстов, не вернувшихся из API — нулевой вектор
+                // Выводим единое предупреждение, а не спамим по каждому ключу
+                if (failedCount > 0)
+                {
+                    Console.ForegroundColor = ConsoleColor.Yellow;
+                    Console.WriteLine($"    [Embed] Итого: {totalMissing - failedCount} получено, {failedCount} не получены. Для них — нулевой вектор (fallback).");
+                    Console.ResetColor();
+                }
+
                 foreach (var text in missingTexts)
                 {
                     if (!result.ContainsKey(text))
-                    {
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"    [Embed] Не удалось получить эмбеддинг для '{text}'. Возвращаю нулевой вектор.");
-                        Console.ResetColor();
                         result[text] = new float[_settings.EmbeddingDimensions];
-                    }
                 }
             }
 
@@ -209,9 +286,14 @@ namespace KeywordClusterizer.Services
 
         /// <summary>
         /// Выполняет HTTP-запрос к OpenRouter API для получения эмбеддингов.
+        /// Сохраняет и восстанавливает Authorization header, чтобы не сломать
+        /// другие запросы через общий HttpClient (Phase 4 DeepSeek).
         /// </summary>
         private async Task<Dictionary<string, float[]>> RequestEmbeddingsAsync(IReadOnlyList<string> texts)
         {
+            if (texts == null || texts.Count == 0)
+                return new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
+
             try
             {
                 var requestBody = new
@@ -223,21 +305,48 @@ namespace KeywordClusterizer.Services
                 string jsonContent = JsonSerializer.Serialize(requestBody);
                 var httpContent = new StringContent(jsonContent, Encoding.UTF8, "application/json");
 
-                // OpenRouter может принимать DeepSeek-ключ, но ожидается отдельный
+                // Сохраняем исходный Authorization header и ставим OpenRouter-ключ
+                var originalAuth = _client.DefaultRequestHeaders.Authorization;
                 _client.DefaultRequestHeaders.Authorization =
                     new AuthenticationHeaderValue("Bearer", _settings.ApiKey);
 
-                var response = await _client.PostAsync(EmbeddingEndpoint, httpContent);
+                HttpResponseMessage response;
+                try
+                {
+                    response = await _client.PostAsync(EmbeddingEndpoint, httpContent);
+                }
+                finally
+                {
+                    // Восстанавливаем исходный Authorization header
+                    _client.DefaultRequestHeaders.Authorization = originalAuth;
+                }
+
                 string responseString = await response.Content.ReadAsStringAsync();
 
                 if (!response.IsSuccessStatusCode)
                 {
                     Console.ForegroundColor = ConsoleColor.Red;
                     Console.WriteLine($"\n[ОШИБКА OpenRouter] Код: {response.StatusCode}");
-                    Console.WriteLine($"Ответ: {responseString}");
+                    // Обрезаем длинный ответ для читаемости
+                    string snippet = responseString.Length > 500
+                        ? responseString[..500] + "..."
+                        : responseString;
+                    Console.WriteLine($"Ответ: {snippet}");
+
+                    // Дополнительная диагностика для частых кодов
+                    if ((int)response.StatusCode == 413)
+                        Console.WriteLine("  → Слишком большой запрос. Попробуйте уменьшить MaxBatchSize.");
+                    else if ((int)response.StatusCode == 400)
+                        Console.WriteLine("  → Неверный запрос. Возможно, модель не поддерживает embeddings endpoint.");
+                    else if ((int)response.StatusCode == 401)
+                        Console.WriteLine("  → Неверный или просроченный API-ключ OpenRouter.");
+
                     Console.ResetColor();
                     return new Dictionary<string, float[]>(StringComparer.OrdinalIgnoreCase);
                 }
+
+                // Логируем размер ответа для отладки
+                Console.WriteLine($"      [Embed] Ответ: {responseString.Length} символов.");
 
                 return ParseEmbeddingResponse(responseString, texts);
             }
