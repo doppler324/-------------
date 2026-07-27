@@ -207,15 +207,35 @@ namespace KeywordClusterizer.Services
             var missingTexts = new List<string>();
 
             // Сначала собираем из кэша
+            int total = texts.Count;
+            int cacheProgressLine = Console.CursorTop;
+            int lineWidth = Console.WindowWidth - 1;
+
             lock (_lock)
             {
-                foreach (var text in texts)
+                for (int idx = 0; idx < total; idx++)
                 {
+                    var text = texts[idx];
                     if (_cache != null && _cache.TryGetValue(text, out var cached))
                         result[text] = cached;
                     else
                         missingTexts.Add(text);
+
+                    // Прогресс копирования из кэша каждые 500 записей
+                    if (total > 1000 && (idx + 1) % 500 == 0)
+                    {
+                        Console.SetCursorPosition(0, cacheProgressLine);
+                        Console.Write($"    [Embed] Чтение из кэша: {idx + 1}/{total}".PadRight(lineWidth).Substring(0, lineWidth));
+                    }
                 }
+            }
+
+            // Стираем строку прогресса кэша
+            if (total > 1000)
+            {
+                Console.SetCursorPosition(0, cacheProgressLine);
+                Console.Write(new string(' ', lineWidth));
+                Console.SetCursorPosition(0, cacheProgressLine);
             }
 
             int totalMissing = missingTexts.Count;
