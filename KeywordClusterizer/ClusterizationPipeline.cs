@@ -324,9 +324,11 @@ namespace KeywordClusterizer
                 Console.WriteLine();
 
                 string userMessage = string.Join("\n", namingLines);
-                string systemPrompt = "Ты SEO-специалист. Для каждого кластера придумай H1-заголовок статьи. "
-                    + "Верни ТОЛЬКО массив названий в том же порядке: [\"Название 1\", \"Название 2\", ...]. "
-                    + "НЕ добавляй ключи, НЕ меняй порядок. "
+                string systemPrompt = "Ты SEO-специалист. Каждому кластеру присвой H1-заголовок для будущей статьи. "
+                    + $"Всего кластеров: {phase4Buckets.Count}. "
+                    + "Верни JSON-объект, где ключ — номер кластера, а значение — H1-заголовок: "
+                    + "{\"1\": \"H1-заголовок для кластера 1\", \"2\": \"H1-заголовок для кластера 2\", ...}. "
+                    + "НЕ добавляй ключевые слова в ответ, только названия. "
                     + $"Ниша: {_businessSettings.Niche}. Логика: {_businessSettings.ClusteringLogic}.";
 
                 // Выбор провайдера
@@ -360,7 +362,7 @@ namespace KeywordClusterizer
                     skipDeepSeekFields: useOpenRouter);
                 Console.WriteLine("Готово.");
 
-                // Парсим ответ: ожидаем массив строк ["Название 1", "Название 2", ...]
+                // Парсим ответ: ожидаем {"1": "Название 1", "2": "Название 2", ...}
                 string cleanJson = rawJson?.Trim() ?? "";
                 if (cleanJson.StartsWith("```"))
                 {
@@ -375,27 +377,31 @@ namespace KeywordClusterizer
                 {
                     try
                     {
-                        var names = JsonSerializer.Deserialize<List<string>>(cleanJson);
-                        if (names != null && names.Count > 0)
+                        var nameMap = JsonSerializer.Deserialize<Dictionary<string, string>>(cleanJson);
+                        if (nameMap != null && nameMap.Count > 0)
                         {
-                            int count = Math.Min(names.Count, phase4Buckets.Count);
-                            for (int i = 0; i < count; i++)
+                            int mappedCount = 0;
+                            for (int i = 0; i < phase4Buckets.Count; i++)
                             {
-                                string h1 = string.IsNullOrWhiteSpace(names[i])
-                                    ? phase4Buckets[i].Name
-                                    : names[i].Trim();
-                                namedClusters[h1] = phase4Buckets[i].Keywords;
+                                string key = (i + 1).ToString();
+                                if (nameMap.TryGetValue(key, out var aiName) && !string.IsNullOrWhiteSpace(aiName))
+                                {
+                                    namedClusters[aiName.Trim()] = phase4Buckets[i].Keywords;
+                                    mappedCount++;
+                                }
+                                else
+                                {
+                                    namedClusters[phase4Buckets[i].Name] = phase4Buckets[i].Keywords;
+                                }
                             }
                             parsed = true;
 
-                            if (names.Count < phase4Buckets.Count)
+                            if (mappedCount < phase4Buckets.Count)
                             {
                                 Console.ForegroundColor = ConsoleColor.Yellow;
-                                Console.WriteLine($"  [WARN] AI вернул {names.Count} названий из {phase4Buckets.Count}. " +
-                                    $"Оставшиеся {phase4Buckets.Count - names.Count} — с именами по умолчанию.");
+                                Console.WriteLine($"  [WARN] AI вернул названия для {mappedCount} из {phase4Buckets.Count} кластеров. " +
+                                    $"Остальные — с именами по умолчанию.");
                                 Console.ResetColor();
-                                for (int i = names.Count; i < phase4Buckets.Count; i++)
-                                    namedClusters[phase4Buckets[i].Name] = phase4Buckets[i].Keywords;
                             }
                         }
                     }
