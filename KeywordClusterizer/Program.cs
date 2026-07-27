@@ -197,6 +197,12 @@ namespace KeywordClusterizer
 
                         if (openrouter.TryGetProperty("cachePath", out var orCache))
                             openRouterSettings.CachePath = orCache.GetString() ?? openRouterSettings.CachePath;
+
+                        if (openrouter.TryGetProperty("batchSize", out var orBatch))
+                            openRouterSettings.BatchSize = orBatch.GetInt32();
+
+                        if (openrouter.TryGetProperty("maxConcurrency", out var orConc))
+                            openRouterSettings.MaxConcurrency = orConc.GetInt32();
                     }
 
                     // Чтение Phase 4 настроек

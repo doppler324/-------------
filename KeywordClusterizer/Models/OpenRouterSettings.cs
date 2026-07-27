@@ -16,5 +16,11 @@ namespace KeywordClusterizer.Models
 
         /// <summary>Путь к файлу кэша эмбеддингов на диске.</summary>
         public string CachePath { get; set; } = "embeddings_cache.json";
+
+        /// <summary>Размер одного батч-запроса (число фраз).</summary>
+        public int BatchSize { get; set; } = 64;
+
+        /// <summary>Количество параллельных потоков для запроса эмбеддингов.</summary>
+        public int MaxConcurrency { get; set; } = 10;
     }
 }

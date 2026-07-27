@@ -187,8 +187,16 @@ namespace KeywordClusterizer
                         finalClusters.AddRange(subClusters);
 
                         int afterSplit = finalClusters.Count;
-                        Console.WriteLine($"  → {cluster.Count} → {afterSplit - beforeSplit} подкластеров (sentence-level)");
+                        int sLevelWidth = Console.WindowWidth - 1;
+                        Console.SetCursorPosition(0, Console.CursorTop);
+                        Console.Write($"  → {cluster.Count} → {afterSplit - beforeSplit} подкластеров (sentence-level)".PadRight(sLevelWidth).Substring(0, sLevelWidth));
                     }
+
+                    // Стираем последнюю строку прогресса перед итогом
+                    int clearW = Console.WindowWidth - 1;
+                    Console.SetCursorPosition(0, Console.CursorTop);
+                    Console.Write(new string(' ', clearW));
+                    Console.SetCursorPosition(0, Console.CursorTop);
 
                     _embeddingClient.SaveCache();
 

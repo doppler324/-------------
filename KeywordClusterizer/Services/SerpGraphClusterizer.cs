@@ -102,13 +102,20 @@ namespace KeywordClusterizer.Services
                     }
                 }
 
-                // Прогресс для больших наборов
+                // Прогресс для больших наборов (перезапись строки)
                 if (n > 200 && (i + 1) % 100 == 0)
                 {
-                    Console.WriteLine($"  [Graph] Обработано {i + 1}/{n} ключей...");
+                    Console.SetCursorPosition(0, Console.CursorTop);
+                    int width = Console.WindowWidth - 1;
+                    Console.Write(($"  [Graph] Обработано {i + 1}/{n} ключей...").PadRight(width).Substring(0, width));
                 }
             }
 
+            // Стираем строку прогресса перед финальным выводом
+            Console.SetCursorPosition(0, Console.CursorTop);
+            int clearW = Console.WindowWidth - 1;
+            Console.Write(new string(' ', clearW));
+            Console.SetCursorPosition(0, Console.CursorTop);
             Console.WriteLine($"  [Graph] Построено {edgesCount} рёбер.");
 
             // Шаг 2: Поиск компонент связности (BFS)

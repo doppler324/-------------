@@ -6,6 +6,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using KeywordClusterizer.Models;
 
@@ -176,13 +177,6 @@ namespace KeywordClusterizer.Services
         }
 
         /// <summary>
-        /// Максимальный размер одного батч-запроса (число текстов).
-        /// OpenRouter/OpenAI обычно лимитируют ~2048 эмбеддингов за запрос,
-        /// но тело запроса может быть слишком большим при длинных фразах.
-        /// </summary>
-        private const int MaxBatchSize = 64;
-
-        /// <summary>
         /// Проверяет, какие тексты отсутствуют в кэше (без API-запроса).
         /// </summary>
         public List<string> GetMissingFromCache(List<string> texts)
@@ -202,7 +196,7 @@ namespace KeywordClusterizer.Services
         }
 
         /// <summary>
-        /// Получает эмбеддинги для списка текстов батч-запросами (с чанкингом).
+        /// Получает эмбеддинги для списка текстов батч-запросами (с чанкингом и параллелизацией).
         /// Пропускает тексты, уже имеющиеся в кэше.
         /// </summary>
         public async Task<Dictionary<string, float[]>> GetEmbeddingsBatchAsync(List<string> texts)
@@ -224,61 +218,76 @@ namespace KeywordClusterizer.Services
                 }
             }
 
-            // Остальные запрашиваем через API, разбивая на чанки
-            if (missingTexts.Count > 0)
+            int totalMissing = missingTexts.Count;
+            if (totalMissing == 0)
+                return result;
+
+            int batchSize = _settings.BatchSize;
+            int maxConcurrency = _settings.MaxConcurrency;
+            int totalChunks = (int)Math.Ceiling((double)totalMissing / batchSize);
+            int failedCount = 0;
+
+            // Формируем чанки
+            var chunks = new List<List<string>>();
+            for (int i = 0; i < totalMissing; i += batchSize)
+                chunks.Add(missingTexts.GetRange(i, Math.Min(batchSize, totalMissing - i)));
+
+            Console.WriteLine($"    [Embed] Запрос {totalMissing} эмбеддингов через OpenRouter (чанков: {totalChunks}, {batchSize}/чанк, потоков: {maxConcurrency})...");
+
+            int progressLine = Console.CursorTop;
+            int completedChunks = 0;
+            object progressLock = new();
+
+            await Parallel.ForEachAsync(chunks, new ParallelOptions { MaxDegreeOfParallelism = maxConcurrency }, async (chunk, ct) =>
             {
-                int totalMissing = missingTexts.Count;
-                int failedCount = 0;
-                int totalChunks = (int)Math.Ceiling((double)totalMissing / MaxBatchSize);
+                var apiResult = await RequestEmbeddingsAsync(chunk);
 
-                Console.WriteLine($"    [Embed] Запрос {totalMissing} эмбеддингов через OpenRouter (чанков: {totalChunks}, макс. {MaxBatchSize}/чанк)...");
-
-                for (int chunkIdx = 0; chunkIdx < totalChunks; chunkIdx++)
+                lock (_lock)
                 {
-                    int start = chunkIdx * MaxBatchSize;
-                    int count = Math.Min(MaxBatchSize, totalMissing - start);
-                    var chunk = missingTexts.GetRange(start, count);
-
-                    Console.WriteLine($"      Чанк {chunkIdx + 1}/{totalChunks}: {count} фраз...");
-                    var apiResult = await RequestEmbeddingsAsync(chunk);
-
-                    // Сохраняем в кэш успешные
                     int chunkSucceeded = 0;
-                    lock (_lock)
+                    foreach (var kvp in apiResult)
                     {
-                        foreach (var kvp in apiResult)
-                        {
-                            result[kvp.Key] = kvp.Value;
-                            chunkSucceeded++;
-                            if (_cache != null)
-                                _cache[kvp.Key] = kvp.Value;
-                        }
+                        result[kvp.Key] = kvp.Value;
+                        chunkSucceeded++;
+                        if (_cache != null)
+                            _cache[kvp.Key] = kvp.Value;
                     }
 
-                    if (apiResult.Count < count)
-                    {
-                        int chunkFailed = count - apiResult.Count;
-                        failedCount += chunkFailed;
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine($"      [Embed] Чанк {chunkIdx + 1}: {chunkFailed}/{count} не получены.");
-                        Console.ResetColor();
-                    }
+                    if (apiResult.Count < chunk.Count)
+                        Interlocked.Add(ref failedCount, chunk.Count - apiResult.Count);
                 }
 
-                // Для текстов, не вернувшихся из API — нулевой вектор
-                // Выводим единое предупреждение, а не спамим по каждому ключу
-                if (failedCount > 0)
+                // Прогресс (перезапись строки)
+                lock (progressLock)
                 {
-                    Console.ForegroundColor = ConsoleColor.Yellow;
-                    Console.WriteLine($"    [Embed] Итого: {totalMissing - failedCount} получено, {failedCount} не получены. Для них — нулевой вектор (fallback).");
-                    Console.ResetColor();
+                    completedChunks++;
+                    int width = Console.WindowWidth - 1;
+                    Console.SetCursorPosition(0, progressLine);
+                    Console.Write($"    [Embed] Чанков: {completedChunks}/{totalChunks}".PadRight(width).Substring(0, width));
                 }
+            });
 
-                foreach (var text in missingTexts)
-                {
-                    if (!result.ContainsKey(text))
-                        result[text] = new float[_settings.EmbeddingDimensions];
-                }
+            // Стираем строку прогресса
+            Console.SetCursorPosition(0, progressLine);
+            Console.Write(new string(' ', Console.WindowWidth - 1));
+            Console.SetCursorPosition(0, progressLine);
+
+            if (failedCount > 0)
+            {
+                Console.ForegroundColor = ConsoleColor.Yellow;
+                Console.WriteLine($"    [Embed] Итого: {totalMissing - failedCount} получено, {failedCount} не получены. Для них — нулевой вектор (fallback).");
+                Console.ResetColor();
+            }
+            else
+            {
+                Console.WriteLine($"    [Embed] Все {totalMissing} эмбеддингов получены.");
+            }
+
+            // Для текстов, не вернувшихся из API — нулевой вектор
+            foreach (var text in missingTexts)
+            {
+                if (!result.ContainsKey(text))
+                    result[text] = new float[_settings.EmbeddingDimensions];
             }
 
             return result;
