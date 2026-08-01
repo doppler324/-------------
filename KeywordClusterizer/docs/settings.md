@@ -28,12 +28,23 @@ API-ключ DeepSeek.
 | `niche` | `сантехника` | Ниша сайта — подставляется в промпты |
 | `clusteringLogic` | `по интенту пользователя` | Логика группировки ключей |
 | `granularityRule` | `кластеры от 2 до 60 ключей` | Правило гранулярности. Парсится `Y` из `"от X до Y ключей"` |
-| `skipNaming` | `false` | Пропустить Phase 4 (AI Merge+Naming). `true` — тех. имена |
+| `skipNaming` | `false` | Пропустить AI-именование (Phase 4). `true` — тех. имена "Кластер N" |
+| `skipMerge` | `false` | `true` — только naming: AI придумывает H1-заголовки, не меняя состав кластеров |
+| `skipPhase4` | `false` | Полностью пропустить Phase 4 |
+| `suppressClusterDisplay` | `false` | Не выводить список кластеров в консоль (для больших наборов) |
 | | | |
-| **Word-Level Clustering** | | |
-| `wordLevelClustering.enabled` | `true` | Включить Phase 3 (word-level кластеризацию внутри SERP-кластеров) |
-| `wordLevelClustering.wordSimThreshold` | `0.85` | Порог cosine similarity между word embeddings (0.0-1.0). Выше = строже к морфологии |
-| `wordLevelClustering.hacThreshold` | `0.35` | Порог Weighted Jaccard для остановки HAC (0.0-1.0). Ниже = мельче кластеры |
+| **Sentence-Level Clustering (Phase 3)** | | |
+| `sentenceLevelClustering.enabled` | `true` | Включить sentence-level кластеризацию внутри SERP-кластеров (эмбеддинги + cosine + HAC) |
+| `sentenceLevelClustering.sentenceHacThreshold` | `0.82` | Порог cosine similarity для остановки HAC. Выше = мельче кластеры |
+| | | |
+| **Macro Merge (Phase 3.5)** | | |
+| `macroMerge.enabled` | `true` | Включить объединение микро-кластеров в макро-бакеты |
+| `macroMerge.representativeMode` | `centroid` | Как вычислять representative-вектор: `"centroid"` (L2-нормализованный средний вектор всех фраз) или `"medoid"` (реальная фраза, ближайшая ко всем остальным) |
+| `macroMerge.similarityThreshold` | `0.77` | Порог cosine similarity между representative-векторами для слияния. Рекомендуется `sentenceHacThreshold - 0.05` |
+| | | |
+| **Rescue Pass V2 (Phase 3.6)** | | |
+| `rescuePassV2.enabled` | `true` | Прикрепление сирот (одиночек + unclustered) к ближайшему ядру |
+| `rescuePassV2.rescueThreshold` | `0.78` | Порог cosine similarity для прикрепления сироты к ядру |
 
 ## `serp`
 
@@ -60,9 +71,11 @@ API-ключ DeepSeek.
 | Поле | По умолчанию | Описание |
 |---|---|---|
 | `apiKey` | — | API-ключ OpenRouter (отдельный от DeepSeek) |
-| `embeddingModel` | `openai/text-embedding-3-large` | Модель для word embeddings (Phase 3) |
-| `embeddingDimensions` | `3072` | Размерность эмбеддингов |
+| `embeddingModel` | `text-embedding-3-small` | Модель для sentence embeddings (Phase 3) |
+| `embeddingDimensions` | `1536` | Размерность эмбеддингов (4096 для `qwen/qwen3-embedding-8b`) |
 | `cachePath` | `embeddings_cache.json` | Путь к кэшу эмбеддингов |
+| `batchSize` | `64` | Сколько фраз отправлять за один запрос к API эмбеддингов |
+| `maxConcurrency` | `10` | Сколько потоков параллельно запрашивают эмбеддинги |
 
 ## `phase4`
 
@@ -78,11 +91,13 @@ API-ключ DeepSeek.
 ## Пайплайн кластеризации (текущий)
 
 ```
-Phase 1:  SERP collection        → XmlRiver, параллельный сбор выдачи для ВСЕХ ключей (кэшируется)
-Phase 2:  Graph clustering       → Connected Components (BFS), граф интентов на основе пересечения URL
-Phase 2.5 Rescue Pass            → Прикрепление unclustered к ближайшему кластеру (≥1 общий URL)
-Phase 3:  Word-level clustering  → IDF + Weighted Soft Jaccard (word embeddings) + HAC
-Phase 4:  AI Merge + Naming      → Единый DeepSeek/OpenRouter call → SeoArticleResponse
+Phase 1:   SERP collection        → XmlRiver, параллельный сбор выдачи для ВСЕХ ключей (кэшируется)
+Phase 2:   Graph clustering       → Connected Components (BFS), граф интентов на основе пересечения URL
+Phase 2.5  Rescue Pass            → Прикрепление unclustered к ближайшему кластеру (≥1 общий URL)
+Phase 3:   Sentence-level         → sentence embeddings (OpenRouter) + cosine similarity + HAC внутри SERP-кластеров
+Phase 3.5  Macro Merge            → Greedy merge микро-кластеров в макро-бакеты (representativeMode)
+Phase 3.6  Rescue Pass V2         → Nearest Centroid: прикрепление сирот к ядрам + pairwise merge
+Phase 4:   AI Merge + Naming      → skipMerge=true: AI придумывает только H1-заголовки, состав не меняется
 ```
 
 ## Удалённые/устаревшие настройки
