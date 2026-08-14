@@ -25,6 +25,8 @@ namespace KeywordClusterizer
         private readonly XmlRiverSettings _serpSettings;
         private readonly OpenRouterSettings _openRouterSettings;
         private readonly Phase4Settings _phase4Settings;
+        private readonly Phase4CleanSettings _phase4CleanSettings;
+        private readonly Phase5FaqSettings _phase5FaqSettings;
         private readonly XmlRiverClient? _xmlRiverClient;
         private readonly SerpCacheService? _cacheService;
         private readonly OpenRouterEmbeddingClient? _embeddingClient;
@@ -36,7 +38,9 @@ namespace KeywordClusterizer
             BusinessSettings businessSettings,
             XmlRiverSettings serpSettings,
             OpenRouterSettings openRouterSettings,
-            Phase4Settings? phase4Settings = null)
+            Phase4Settings? phase4Settings = null,
+            Phase4CleanSettings? phase4CleanSettings = null,
+            Phase5FaqSettings? phase5FaqSettings = null)
         {
             _client = client;
             _deepSeekSettings = deepSeekSettings;
@@ -44,6 +48,8 @@ namespace KeywordClusterizer
             _serpSettings = serpSettings;
             _openRouterSettings = openRouterSettings;
             _phase4Settings = phase4Settings ?? new Phase4Settings();
+            _phase4CleanSettings = phase4CleanSettings ?? new Phase4CleanSettings();
+            _phase5FaqSettings = phase5FaqSettings ?? new Phase5FaqSettings();
 
             // Инициализируем SERP-клиент только если есть учётные данные
             if (!string.IsNullOrWhiteSpace(_serpSettings.XmlriverUser) &&
@@ -61,8 +67,15 @@ namespace KeywordClusterizer
             }
         }
 
-        public async Task<Dictionary<string, List<string>>?> RunAsync(List<string> keywords)
+        public async Task<Models.ClusteringResult?> RunAsync(
+            List<string> keywords, string? resumeFromPhase = null)
         {
+            // Если запрошено возобновление с чекпойнта — пропускаем фазы 1-3.6 и стартуем с нужной точки
+            if (!string.IsNullOrWhiteSpace(resumeFromPhase))
+            {
+                return await ResumeFromCheckpointAsync(resumeFromPhase);
+            }
+
             if (_xmlRiverClient == null)
             {
                 Console.ForegroundColor = ConsoleColor.Red;
@@ -73,7 +86,7 @@ namespace KeywordClusterizer
             return await RunSerpFirstAsync(keywords);
         }
 
-        private async Task<Dictionary<string, List<string>>?> RunSerpFirstAsync(List<string> keywords)
+        private async Task<Models.ClusteringResult?> RunSerpFirstAsync(List<string> keywords)
         {
             int maxClusterSize = _businessSettings.ParseMaxClusterSize();
             Console.WriteLine($"\n=== SERP-First пайплайн ===");
@@ -121,6 +134,9 @@ namespace KeywordClusterizer
             var sentenceLevelClusterizer = new SentenceLevelClusterizer(
                 _businessSettings.SentenceHacThreshold);
 
+            // Эмбеддинги фраз — заполняются в Phase 3, нужны для Phase 5 (привязка FAQ к статьям)
+            Dictionary<string, float[]>? phraseEmbeddings = null;
+
             // Проверка API-ключа OpenRouter перед началом
             if (_embeddingClient == null)
             {
@@ -166,7 +182,7 @@ namespace KeywordClusterizer
                 if (!needApiRequest || apiAvailable)
                 {
                     Console.WriteLine($"  [Embed] Загрузка {allSerpPhrases.Count} эмбеддингов...");
-                    var phraseEmbeddings = await _embeddingClient.GetEmbeddingsBatchAsync(allSerpPhrases);
+                    phraseEmbeddings = await _embeddingClient.GetEmbeddingsBatchAsync(allSerpPhrases);
 
                     foreach (var cluster in serpClusters)
                     {
@@ -288,12 +304,14 @@ namespace KeywordClusterizer
             }
             else if (_businessSettings.SkipNaming)
             {
-                Console.WriteLine("  Пропуск AI-обработки (skipNaming=true).");
-                int idx = 0;
+                Console.WriteLine("  Пропуск AI-обработки (skipNaming=true). Имена бакетов = медоиды.");
                 foreach (var bucket in phase4Buckets)
                 {
-                    idx++;
-                    string name = bucket.Keywords.Count > 1 ? $"Кластер {idx}" : bucket.Name;
+                    // Имя бакета = медоид ядра (реальная фраза), чтобы названия были осмысленными,
+                    // а не «Кластер N». Если Name пуст — fallback на первый ключ.
+                    string name = string.IsNullOrWhiteSpace(bucket.Name)
+                        ? (bucket.Keywords.Count > 0 ? bucket.Keywords[0] : $"Кластер {namedClusters.Count + 1}")
+                        : bucket.Name;
                     namedClusters[name] = bucket.Keywords;
                 }
             }
@@ -543,9 +561,161 @@ namespace KeywordClusterizer
                 Console.WriteLine($"  Нераспределённых ключей: {allUnclustered.Count}");
             }
 
+            // Чекпойнт после Phase 4 (до чистки) — для возобновления с этого этапа
+            Services.CheckpointStore.Save(new Models.CheckpointData
+            {
+                Phase = "phase4",
+                Clusters = namedClusters,
+                Meta = new Dictionary<string, Models.ClusterMeta>()
+            });
+
+            // ==========================================
+            // Фаза 4.5: AI-чистка кластеров
+            // Вынесенные запросы, не подошедшие ни к одному кластеру, уходят в «Нераспределённые».
+            // Выполняется после формирования namedClusters:
+            //   — если skipPhase4=true, работает по медоидным именам (сразу после Phase 3.6);
+            //   — если skipPhase4=false, работает по результату AI Merge + Naming.
+            // ==========================================
+            if (_phase4CleanSettings.Enabled && namedClusters.Count > 0)
+            {
+                var cleaner = new Services.Phase4ClusterCleanerPass(
+                    _client, _deepSeekSettings, _openRouterSettings, _phase4CleanSettings, _businessSettings);
+                namedClusters = await cleaner.CleanAsync(namedClusters);
+            }
+
+            // Чекпойнт после Phase 4.5 (до Phase 5) — для возобновления с этого этапа
+            Services.CheckpointStore.Save(new Models.CheckpointData
+            {
+                Phase = "phase4_5",
+                Clusters = namedClusters,
+                Meta = new Dictionary<string, Models.ClusterMeta>()
+            });
+
+            // ==========================================
+            // Фаза 5: Отбор FAQ-кластеров и привязка к статьям
+            // AI отбирает кластеры, не подходящие для отдельной статьи, но подходящие
+            // как FAQ-блоки. Состав кластеров НЕ меняется — FAQ-кластеры остаются в списке
+            // статей и получают метаданные (IsFaq, LinkedArticle). Привязка к статье — по смыслу,
+            // автоматически (cosine similarity по representative-векторам, без AI).
+            // ==========================================
+            var clusterMeta = new Dictionary<string, Models.ClusterMeta>(StringComparer.OrdinalIgnoreCase);
+            if (_phase5FaqSettings.Enabled && namedClusters.Count > 0)
+            {
+                var faqPass = new Services.FaqSelectionPass(
+                    _client, _deepSeekSettings, _openRouterSettings, _phase5FaqSettings, _businessSettings);
+                clusterMeta = await faqPass.RunAsync(
+                    namedClusters, phraseEmbeddings ?? new Dictionary<string, float[]>());
+            }
+
+            // Чекпойнт после Phase 5 (финальный) — для полного возобновления
+            Services.CheckpointStore.Save(new Models.CheckpointData
+            {
+                Phase = "phase5",
+                Clusters = namedClusters,
+                Meta = clusterMeta
+            });
+
             int totalKeys = namedClusters.Sum(c => c.Value.Count);
             Console.WriteLine($"\nИтого: {namedClusters.Count} кластеров, {totalKeys} ключей.");
-            return namedClusters;
+            return new Models.ClusteringResult
+            {
+                Clusters = namedClusters,
+                Meta = clusterMeta
+            };
+        }
+
+        /// <summary>
+        /// Возобновление работы с чекпойнта завершённой фазы (Phase 4 / 4.5 / 5).
+        /// Загружает сохранённые кластеры и выполняет ТОЛЬКО последующие фазы:
+        ///   — "phase4"   → пропустить фазы 1-4, выполнить 4.5 и 5
+        ///   — "phase4_5" → пропустить фазы 1-4.5, выполнить только 5
+        ///   — "phase5"   → всё готово, вернуть результат из чекпойнта
+        /// </summary>
+        private async Task<Models.ClusteringResult?> ResumeFromCheckpointAsync(string resumeFromPhase)
+        {
+            var checkpoint = Services.CheckpointStore.Load(resumeFromPhase);
+            if (checkpoint == null || checkpoint.Clusters == null || checkpoint.Clusters.Count == 0)
+            {
+                ConsoleUtils.WriteLine(
+                    $"[ОШИБКА] Чекпойнт '{resumeFromPhase}.json' не найден или пуст. Запустите полную кластеризацию.",
+                    ConsoleColor.Red);
+                return null;
+            }
+
+            ConsoleUtils.WriteLine(
+                $"[Resume] Чекпойнт '{resumeFromPhase}.json' загружен ({checkpoint.Clusters.Count} кластеров).",
+                ConsoleColor.Cyan);
+
+            var namedClusters = checkpoint.Clusters;
+            var clusterMeta = checkpoint.Meta ?? new Dictionary<string, Models.ClusterMeta>(StringComparer.OrdinalIgnoreCase);
+
+            // Если всё уже завершено — возвращаем результат
+            if (string.Equals(resumeFromPhase, "phase5", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsoleUtils.WriteLine("[Resume] Все фазы уже завершены (phase5). Возвращаю результат.", ConsoleColor.Cyan);
+                return new Models.ClusteringResult { Clusters = namedClusters, Meta = clusterMeta };
+            }
+
+            // Для Phase 4.5/5 нужен доступ к эмбеддингам — загружаем из кэша (без API, если всё есть)
+            Dictionary<string, float[]>? phraseEmbeddings = null;
+            if (_embeddingClient != null)
+            {
+                Console.WriteLine("  [Embed] Загрузка эмбеддингов из кэша для Phase 4.5/5...");
+                var allPhrases = namedClusters.Values
+                    .SelectMany(v => v)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                phraseEmbeddings = await _embeddingClient.GetEmbeddingsBatchAsync(allPhrases);
+                _embeddingClient.SaveCache();
+            }
+
+            // ==========================================
+            // Phase 4.5: AI-чистка кластеров (только если резюмируем с phase4)
+            // ==========================================
+            if (string.Equals(resumeFromPhase, "phase4", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine("\n--- Фаза 4.5: AI-чистка кластеров (возобновление) ---");
+                if (_phase4CleanSettings.Enabled && namedClusters.Count > 0)
+                {
+                    var cleaner = new Services.Phase4ClusterCleanerPass(
+                        _client, _deepSeekSettings, _openRouterSettings, _phase4CleanSettings, _businessSettings);
+                    namedClusters = await cleaner.CleanAsync(namedClusters);
+                }
+
+                Services.CheckpointStore.Save(new Models.CheckpointData
+                {
+                    Phase = "phase4_5",
+                    Clusters = namedClusters,
+                    Meta = new Dictionary<string, Models.ClusterMeta>()
+                });
+            }
+
+            // ==========================================
+            // Phase 5: Отбор FAQ-кластеров и привязка к статьям
+            // ==========================================
+            Console.WriteLine("\n--- Фаза 5: Отбор FAQ-кластеров и привязка к статьям (возобновление) ---");
+            if (_phase5FaqSettings.Enabled && namedClusters.Count > 0)
+            {
+                var faqPass = new Services.FaqSelectionPass(
+                    _client, _deepSeekSettings, _openRouterSettings, _phase5FaqSettings, _businessSettings);
+                clusterMeta = await faqPass.RunAsync(
+                    namedClusters, phraseEmbeddings ?? new Dictionary<string, float[]>());
+            }
+
+            Services.CheckpointStore.Save(new Models.CheckpointData
+            {
+                Phase = "phase5",
+                Clusters = namedClusters,
+                Meta = clusterMeta
+            });
+
+            int totalKeys = namedClusters.Sum(c => c.Value.Count);
+            Console.WriteLine($"\nИтого: {namedClusters.Count} кластеров, {totalKeys} ключей.");
+            return new Models.ClusteringResult
+            {
+                Clusters = namedClusters,
+                Meta = clusterMeta
+            };
         }
 
         /// <summary>

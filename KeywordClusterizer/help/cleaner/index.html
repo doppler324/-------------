@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Справка: этап «Чистка ключевых слов»</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+table { border-collapse: collapse; margin: 10px 0; background: #fff; }
+th, td { border: 1px solid #c9d4e0; padding: 6px 10px; text-align: left; }
+th { background: #e8f0fa; }
+.cards { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 16px; }
+.card { background: #fff; border: 1px solid #d5dee8; border-radius: 6px; padding: 14px 16px; width: 250px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+.card h3 a { color: #0b5cad; text-decoration: none; }
+.card h3 a:hover { text-decoration: underline; }
+.card p { margin: 0; font-size: 13px; color: #4a5664; }
+.note { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Этап «Чистка ключевых слов» (режим 2)</h1>
+
+<p>Этап чистки ключевых запросов (Keyword Cleaner) — отдельный режим программы (пункт меню <b>2</b>). Он предназначен для <b>первичной подготовки семантического ядра</b>: с помощью нейросети из списка ключей убирается «мусор» и оставляются только релевантные запросы, подходящие для дальнейшей кластеризации.</p>
+
+<h2>Что делает этап</h2>
+<ol>
+<li>Читает ключевые слова из файла <code>keywords.txt</code> (по одному ключу на строку).</li>
+<li>Удаляет дубликаты (без учёта регистра).</li>
+<li>Разбивает список на пулы (по умолчанию до 1000 ключей в каждом).</li>
+<li>Каждый пул отправляется нейросети (многопоточно, по умолчанию 10 потоков).</li>
+<li>Нейросеть относит каждый ключ к одной из категорий: <code>cleaned</code> (релевантные), <code>discarded</code> (мусор), <code>branded</code> (брендовые).</li>
+<li>Ответ валидируется, результаты сохраняются в отдельные файлы.</li>
+</ol>
+
+<h2>Разделы справки</h2>
+<div class="cards">
+  <div class="card">
+    <h3><a href="launch.html">Запуск этапа</a></h3>
+    <p>Подготовка файла keywords.txt, последовательность вопросов при запуске, ход выполнения.</p>
+  </div>
+  <div class="card">
+    <h3><a href="settings.html">Настройки</a></h3>
+    <p>Секция cleaner в settings.json: модель, размер пула, выходные файлы, инструкции.</p>
+  </div>
+  <div class="card">
+    <h3><a href="querytypes.html">Типы запросов</a></h3>
+    <p>Информационный и коммерческий отбор, правила исключения, обработка брендовых запросов.</p>
+  </div>
+  <div class="card">
+    <h3><a href="results.html">Результаты</a></h3>
+    <p>Выходные файлы (cleaned / discarded / branded / failed) и сводка в консоли.</p>
+  </div>
+  <div class="card">
+    <h3><a href="faq.html">Частые вопросы</a></h3>
+    <p>Решение типичных ошибок: keywords.txt не найден, 401, failed.txt и др.</p>
+  </div>
+</div>
+
+<h2>Выходные файлы</h2>
+<table>
+<tr><th>Файл</th><th>Содержимое</th></tr>
+<tr><td><code>cleaned.txt</code></td><td>Релевантные ключи — готовы к дальнейшей кластеризации</td></tr>
+<tr><td><code>discarded.txt</code></td><td>Отброшенные (мусорные) ключи</td></tr>
+<tr><td><code>branded.txt</code></td><td>Брендовые запросы (если выбран соответствующий режим)</td></tr>
+<tr><td><code>failed.txt</code></td><td>Необработанные ключи (сбой пула + «потерянные» AI) — можно повторно запустить чистку с этим файлом</td></tr>
+</table>
+
+<h2>Дальнейший путь</h2>
+<p>Очищенный список из <code>cleaned.txt</code> используется как входной файл для этапа кластеризации (режим 1).</p>
+
+<div class="note"><b>Подсказка:</b> после чистки всегда проверяйте <code>failed.txt</code> — если он не пуст, запустите чистку повторно, указав его как входной файл, чтобы не потерять ключи.</div>
+
+</div>
+</body>
+</html>

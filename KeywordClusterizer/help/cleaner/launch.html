@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Запуск этапа чистки (режим 2)</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+table { border-collapse: collapse; margin: 10px 0; background: #fff; }
+th, td { border: 1px solid #c9d4e0; padding: 6px 10px; text-align: left; }
+th { background: #e8f0fa; }
+.warn { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Запуск этапа чистки</h1>
+
+<h2>Подготовка</h2>
+<ol>
+<li>Поместите файл <code>keywords.txt</code> в папку программы (рядом с <code>KeywordClusterizer.exe</code>).</li>
+<li>Формат: один ключевой запрос на строку. Пустые строки игнорируются.</li>
+<li>Убедитесь, что в <code>settings.json</code> указан API-ключ DeepSeek (или он будет запрошен при запуске).</li>
+</ol>
+
+<h2>Шаги запуска</h2>
+<p>Запустите <code>KeywordClusterizer.exe</code> и выберите пункт <b>2 - Чистка ключевых запросов</b>.</p>
+
+<p>Программа последовательно запросит:</p>
+<table>
+<tr><th>Шаг</th><th>Вопрос</th><th>Варианты</th></tr>
+<tr><td>1</td><td>API-ключ DeepSeek (если не задан в settings.json)</td><td>Ввод ключа (скрытый)</td></tr>
+<tr><td>2</td><td>Тип отбора</td><td><b>1</b> — информационные запросы (как, что, почему)<br><b>2</b> — коммерческие запросы (купить, цена, заказать)</td></tr>
+<tr><td>3</td><td>Обработка брендовых запросов</td><td><b>1</b> — отдельный файл branded.txt<br><b>2</b> — в discarded.txt<br><b>3</b> — оставить в очищенных</td></tr>
+<tr><td>4</td><td>Модель нейросети</td><td><b>1</b> — DeepSeek V4 Pro<br><b>2</b> — DeepSeek V4 Flash</td></tr>
+<tr><td>5</td><td>Тема/ниша запросов</td><td>Например: сантехника, унитазы (Enter — пропустить)</td></tr>
+<tr><td>6</td><td>Дополнительные инструкции для нейросети</td><td>Произвольный текст (Enter — пропустить)</td></tr>
+<tr><td>7</td><td>Количество потоков</td><td>По умолчанию 10 (Enter)</td></tr>
+</table>
+
+<h2>Ход выполнения</h2>
+<ul>
+<li>Список делится на пулы, каждый пул обрабатывается параллельно.</li>
+<li>В консоли виден прогресс: <code>[3/5] Отправка пула (800 ключей)... OK (clean: 650, brand: 30, discard: 120)</code></li>
+<li>При сбое пула (например, ошибка API) ключи сохраняются в <code>failed.txt</code>.</li>
+</ul>
+
+<div class="warn"><b>Внимание:</b> при ошибочном API-ключе (401) дальнейшая обработка останавливается — все пулы помечаются как неудачные.</div>
+
+</div>
+</body>
+</html>

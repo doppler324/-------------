@@ -81,9 +81,13 @@ namespace KeywordClusterizer
             {
                 return (JsonSerializer.Deserialize<T>(cleanJson), ApiErrorType.None);
             }
-            catch (JsonException)
+            catch (JsonException ex)
             {
                 ConsoleUtils.WriteLine($"\n[ОШИБКА] Не удалось распарсить ответ AI как {typeof(T).Name}.", ConsoleColor.Yellow);
+                ConsoleUtils.WriteLine($"  Позиция ошибки: Path='{ex.Path}', Line={ex.LineNumber}, Column={ex.BytePositionInLine}", ConsoleColor.Yellow);
+                // Фрагмент вокруг позиции ошибки (по 80 символов влево/вправо) — чтобы увидеть проблемное место
+                string fragment = GetFragmentAround(cleanJson, ex.LineNumber, ex.BytePositionInLine);
+                ConsoleUtils.WriteLine($"  Фрагмент вокруг ошибки:\n  {fragment}", ConsoleColor.Yellow);
                 ConsoleUtils.WriteLine($"  Первые 500 символов ответа:\n  {cleanJson[..Math.Min(cleanJson.Length, 500)]}", ConsoleColor.Yellow);
                 return (null, ApiErrorType.ParseError);
             }
@@ -399,6 +403,32 @@ namespace KeywordClusterizer
                 cleaned = cleaned[..^3];
 
             return cleaned.Trim();
+        }
+
+        /// <summary>
+        /// Возвращает фрагмент текста вокруг позиции ошибки парсинга JSON
+        /// (по 80 символов влево и вправо от позиции), чтобы увидеть проблемное место.
+        /// Используется в диагностике при JsonException.
+        /// </summary>
+        private static string GetFragmentAround(string json, long? line, long? column)
+        {
+            // JsonException.LineNumber/BytePositionInLine нумеруются с 0
+            if (line.HasValue && line.Value >= 0 && column.HasValue && column.Value >= 0)
+            {
+                string[] lines = json.Split('\n');
+                if (line.Value < lines.Length)
+                {
+                    string targetLine = lines[line.Value];
+                    int pos = (int)Math.Min(column.Value, targetLine.Length);
+                    int start = Math.Max(0, pos - 80);
+                    int len = Math.Min(targetLine.Length - start, 160);
+                    if (len > 0)
+                        return targetLine.Substring(start, len);
+                }
+            }
+
+            // Fallback: первые 200 символов
+            return json.Length <= 200 ? json : json[..200];
         }
     }
 }

@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Типы запросов и обработка брендов</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+table { border-collapse: collapse; margin: 10px 0; background: #fff; }
+th, td { border: 1px solid #c9d4e0; padding: 6px 10px; text-align: left; }
+th { background: #e8f0fa; }
+.note { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Типы запросов и обработка брендов</h1>
+
+<h2>Тип отбора запросов</h2>
+<p>При запуске выбирается один из двух типов отбора, который определяет инструкцию для нейросети:</p>
+
+<table>
+<tr><th>Тип</th><th>Ключевые слова</th><th>Что оставляем</th></tr>
+<tr><td><b>1 — Информационные</b></td><td>как, что, почему, зачем, инструкция</td><td>Запросы с информационным интентом (как почистить, что лучше, инструкция)</td></tr>
+<tr><td><b>2 — Коммерческие</b></td><td>купить, цена, заказать, установка</td><td>Запросы с коммерческим интентом (заказать услугу, установка, ремонт)</td></tr>
+</table>
+
+<h3>Информационный тип — что уходит в discarded</h3>
+<ul>
+<li>Запросы с отзывами, форумами, видео, фото.</li>
+<li>Коммерческие слова: цена, сколько стоит, купить, заказать, доставка.</li>
+<li>Снипы, нормы, ГОСТы, стандарты.</li>
+<li>Обсценная лексика, неполные/бессмысленные запросы.</li>
+<li>Полные дубли (в т.ч. с перестановкой слов).</li>
+<li>Запросы без информационного интента, переводы, чертежи, сканворды.</li>
+</ul>
+
+<h3>Коммерческий тип — что уходит в discarded</h3>
+<ul>
+<li>Информационные и репутационные запросы: отзывы, форум, обзор, рейтинг, видео, фото.</li>
+<li>Ценовые запросы: цена, сколько стоит, прайс, дорого/дёшево.</li>
+<li>Техническая документация: ГОСТ, СНиП, нормы, инструкция, реферат.</li>
+<li>География (установка в москве, спб), смешанные запросы, дубли.</li>
+<li>Брендовые запросы (конкретные марки и модели).</li>
+</ul>
+
+<div class="note"><b>Важно:</b> если запрос можно отнести и к информационному, и к коммерческому — для информационного типа он остаётся; для коммерческого типа при неуверенности — отправляется в discarded.</div>
+
+<h2>Обработка брендовых запросов</h2>
+<p>Брендовые запросы — упоминания конкретных марок, брендов или моделей товаров. При запуске можно выбрать:</p>
+<table>
+<tr><th>Режим</th><th>Поведение</th></tr>
+<tr><td><b>1 — Отдельный файл</b> (по умолчанию)</td><td>Брендовые запросы сохраняются в <code>branded.txt</code></td></tr>
+<tr><td><b>2 — В discarded.txt</b></td><td>Брендовые запросы помещаются в отброшенные</td></tr>
+<tr><td><b>3 — Оставить в очищенных</b></td><td>Брендовые запросы остаются в <code>cleaned.txt</code></td></tr>
+</table>
+
+<h2>Тема и дополнительные инструкции</h2>
+<ul>
+<li><b>Тема/ниша</b> — добавляется в промпт; запросы, не соответствующие теме, отправляются в discarded.</li>
+<li><b>Дополнительные инструкции</b> — произвольный текст, который будет добавлен в промпт к AI.</li>
+</ul>
+
+</div>
+</body>
+</html>

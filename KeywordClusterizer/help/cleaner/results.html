@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Результаты и выходные файлы</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+pre { background: #fff; padding: 10px; border: 1px solid #d5dee8; border-left: 3px solid #0b5cad; overflow-x: auto; }
+table { border-collapse: collapse; margin: 10px 0; background: #fff; }
+th, td { border: 1px solid #c9d4e0; padding: 6px 10px; text-align: left; }
+th { background: #e8f0fa; }
+.note { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 10px 0; }
+.ok { background: #eaf7ec; border-left: 4px solid #5cb85c; padding: 8px 12px; margin: 10px 0; }
+.warn { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Результаты и выходные файлы</h1>
+
+<p>После завершения чистки в консоли выводится сводка, а результаты сохраняются в файлы рядом с программой.</p>
+
+<h2>Выходные файлы</h2>
+<table>
+<tr><th>Файл</th><th>Содержимое</th><th>Когда создаётся</th></tr>
+<tr><td><code>cleaned.txt</code></td><td>Релевантные ключи (информационные или коммерческие)</td><td>Всегда, если есть релевантные</td></tr>
+<tr><td><code>discarded.txt</code></td><td>Отброшенные ключи</td><td>Всегда, если есть отброшенные</td></tr>
+<tr><td><code>branded.txt</code></td><td>Брендовые запросы</td><td>Только при режиме «отдельный файл»</td></tr>
+<tr><td><code>failed.txt</code></td><td>Необработанные ключи (сбои пулов + «потерянные» AI)</td><td>Только если есть необработанные</td></tr>
+</table>
+
+<h2>Сводка в консоли</h2>
+<pre>
+=================================================
+              РЕЗУЛЬТАТ ЧИСТКИ
+=================================================
+Всего обработано:   15000 ключей
+Из них классифицировано: 15000
+Релевантных:        10200
+Брендовых:          450
+Отброшено:          4350
+</pre>
+
+<h2>Как понять, что всё прошло хорошо</h2>
+<ul>
+<li><b>Нет файла <code>failed.txt</code></b> — все ключи обработаны и классифицированы.</li>
+<li>Релевантных ключей достаточно для дальнейшей кластеризации.</li>
+<li>В консоли нет сообщений <code>[ОШИБКА]</code> о сбоях пулов.</li>
+</ul>
+
+<h2>Если есть failed.txt</h2>
+<div class="warn">Необработанные ключи не были классифицированы. Чтобы не потерять их, повторно запустите чистку, указав <code>failed.txt</code> как входной файл (вместо <code>keywords.txt</code>).</div>
+
+<h2>Проверка ответа AI</h2>
+<p>Программа автоматически валидирует ответ нейросети:</p>
+<ul>
+<li>Каждый ключ попадает ровно в одну категорию (пересечения убираются).</li>
+<li>В результаты попадают только ключи, реально присутствовавшие во входном пуле.</li>
+<li>Ключи, которые AI «забыла» упомянуть, помечаются как <code>missed</code> и уходят в <code>failed.txt</code>.</li>
+</ul>
+
+<div class="ok"><b>Дальше:</b> очищенный список из <code>cleaned.txt</code> можно использовать как вход для кластеризации (режим 1).</div>
+
+</div>
+</body>
+</html>

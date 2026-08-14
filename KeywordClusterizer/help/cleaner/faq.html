@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Частые вопросы и ошибки</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+h3 { color: #1f2733; margin-bottom: 4px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+.warn { background: #fdecea; border-left: 4px solid #d9534f; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Частые вопросы и ошибки</h1>
+
+<h2>Вопросы</h2>
+
+<h3>Что делать с файлом failed.txt?</h3>
+<p>Запустите чистку повторно, указав <code>failed.txt</code> как входной файл вместо <code>keywords.txt</code>. Все необработанные ключи будут обработаны заново.</p>
+
+<h3>Почему часть ключей попала в discarded?</h3>
+<p>Нейросеть классифицирует ключи по правилам выбранного типа отбора (информационный/коммерческий). Если ключ не соответствует типу, содержит «мусорные» слова (отзывы, видео, цена и т.п.) или является дубликатом — он уходит в discarded.</p>
+
+<h3>Как увеличить точность чистки?</h3>
+<ul>
+<li>Укажите тему/нишу запросов при запуске.</li>
+<li>Добавьте дополнительные инструкции для нейросети.</li>
+<li>Используйте модель DeepSeek V4 Pro вместо Flash.</li>
+</ul>
+
+<h3>Сколько ключей можно обработать за раз?</h3>
+<p>Ключи делятся на пулы по <code>defaultPoolSize</code> (по умолчанию 1000). Каждый пул обрабатывается отдельным запросом параллельно, поэтому объём входного списка практически не ограничен.</p>
+
+<h3>Можно ли прервать выполнение?</h3>
+<p>Да, но уже обработанные пулы не сохраняются до конца обработки. Рекомендуется дождаться завершения, иначе придётся начинать заново.</p>
+
+<h2>Типичные ошибки</h2>
+
+<h3>[ОШИБКА] Файл 'keywords.txt' не найден.</h3>
+<p>Поместите файл <code>keywords.txt</code> в папку программы, рядом с <code>KeywordClusterizer.exe</code>.</p>
+
+<h3>Пул — неверный API ключ (401)</h3>
+<div class="warn">Проверьте ключ DeepSeek в <code>settings.json</code> (параметр <code>apiKey</code>) или введите правильный ключ при запуске.</div>
+
+<h3>[ОШИБКА] Файл инструкции не найден</h3>
+<p>Убедитесь, что папка <code>instructions</code> с файлами <code>cleaner_informational.txt</code>, <code>cleaner_commercial.txt</code>, <code>cleaner_branded.txt</code> находится рядом с программой, или укажите правильные пути в <code>settings.json</code>.</p>
+
+<h3>Программа долго отвечает / зависла</h3>
+<p>Большие пулы (до 1000 ключей) обрабатываются долго. HTTP-клиент настроен на таймаут 30 минут. Подождите — это нормально для больших списков.</p>
+
+</div>
+</body>
+</html>

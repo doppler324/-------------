@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Настройки этапа чистки</title>
+<style>
+body { font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; color: #1f2733; margin: 0; line-height: 1.5; background: #f4f6f9; }
+.nav { background: #0b5cad; padding: 10px 20px; }
+.nav a { color: #fff; text-decoration: none; margin-right: 18px; font-weight: 600; font-size: 14px; }
+.nav a:hover { text-decoration: underline; }
+.wrap { max-width: 900px; margin: 0 auto; padding: 20px; }
+h1 { color: #0b5cad; border-bottom: 2px solid #0b5cad; padding-bottom: 6px; }
+h2 { color: #0b5cad; margin-top: 24px; }
+code { background: #eef3f9; padding: 1px 5px; border-radius: 3px; font-family: Consolas, monospace; }
+pre { background: #fff; padding: 10px; border: 1px solid #d5dee8; border-left: 3px solid #0b5cad; overflow-x: auto; }
+table { border-collapse: collapse; margin: 10px 0; background: #fff; }
+th, td { border: 1px solid #c9d4e0; padding: 6px 10px; text-align: left; }
+th { background: #e8f0fa; }
+.note { background: #fff8e1; border-left: 4px solid #f0ad4e; padding: 8px 12px; margin: 10px 0; }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <a href="index.html">Обзор</a>
+  <a href="launch.html">Запуск</a>
+  <a href="settings.html">Настройки</a>
+  <a href="querytypes.html">Типы запросов</a>
+  <a href="results.html">Результаты</a>
+  <a href="faq.html">FAQ</a>
+</nav>
+
+<div class="wrap">
+
+<h1>Настройки этапа чистки</h1>
+
+<p>Настройки этапа чистки задаются в секции <code>cleaner</code> файла <code>settings.json</code>, расположенного в папке программы. Если секция отсутствует — используются значения по умолчанию.</p>
+
+<pre>{
+  "cleaner": {
+    "defaultModel": "deepseek-v4-pro",
+    "defaultPoolSize": 1000,
+    "outputCleaned": "cleaned.txt",
+    "outputDiscarded": "discarded.txt",
+    "outputBranded": "branded.txt",
+    "outputFailed": "failed.txt",
+    "instructionsInformational": "instructions/cleaner_informational.txt",
+    "instructionsCommercial": "instructions/cleaner_commercial.txt",
+    "instructionsBranded": "instructions/cleaner_branded.txt"
+  }
+}</pre>
+
+<h2>Описание параметров</h2>
+<table>
+<tr><th>Параметр</th><th>По умолчанию</th><th>Назначение</th></tr>
+<tr><td><code>defaultModel</code></td><td><code>deepseek-v4-pro</code></td><td>Модель нейросети, используемая при чистке</td></tr>
+<tr><td><code>defaultPoolSize</code></td><td><code>1000</code></td><td>Максимальное число ключей в одном пуле (запросе к AI)</td></tr>
+<tr><td><code>outputCleaned</code></td><td><code>cleaned.txt</code></td><td>Файл с релевантными ключами</td></tr>
+<tr><td><code>outputDiscarded</code></td><td><code>discarded.txt</code></td><td>Файл с отброшенными ключами</td></tr>
+<tr><td><code>outputBranded</code></td><td><code>branded.txt</code></td><td>Файл с брендовыми запросами</td></tr>
+<tr><td><code>outputFailed</code></td><td><code>failed.txt</code></td><td>Файл с необработанными ключами</td></tr>
+<tr><td><code>instructionsInformational</code></td><td>—</td><td>Путь к инструкции для информационных запросов</td></tr>
+<tr><td><code>instructionsCommercial</code></td><td>—</td><td>Путь к инструкции для коммерческих запросов</td></tr>
+<tr><td><code>instructionsBranded</code></td><td>—</td><td>Путь к инструкции по брендовым запросам</td></tr>
+</table>
+
+<h2>Общие настройки (используются этапом)</h2>
+<ul>
+<li><code>apiKey</code> — ключ DeepSeek API.</li>
+<li><code>deepseek.temperature / maxTokens / topP / stream</code> — параметры генерации.</li>
+<li><code>openrouter.apiKey</code> — ключ OpenRouter (не требуется для стандартных моделей DeepSeek).</li>
+</ul>
+
+<div class="note"><b>Примечание:</b> при выборе модели в консоли (V4 Pro / V4 Flash) выбор переопределяет <code>defaultModel</code> на текущий запуск.</div>
+
+</div>
+</body>
+</html>
