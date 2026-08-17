@@ -38,6 +38,107 @@ namespace KeywordClusterizer
             public void AddProcessed(int amount) => Interlocked.Add(ref _processedCount, amount);
         }
 
+        /// <summary>
+        /// Отрисовка статуса пулов в консоли: всегда показывает ровно maxConcurrency строк (по одной на поток)
+        /// плюс строку прогресса. Строки перезаписываются при изменении, а не накапливаются.
+        /// </summary>
+        private sealed class PoolProgressDisplay
+        {
+            private readonly int _rows;          // число строк = числу потоков
+            private readonly string[] _rowTexts; // текущий текст каждой строки
+            private readonly int _topLine;       // строка консоли, с которой начинается блок
+            private readonly object _sync = new();
+            private readonly int _padWidth;      // ширина очистки строки
+            private int _nextSlot;               // счётчик для выдачи слотов по кругу
+            private string _progress = "";
+            private bool _finished;
+            private bool _supportsRedraw = true; // false при перенаправленном выводе — включается fallback
+
+            public PoolProgressDisplay(int rows)
+            {
+                _rows = rows;
+                _rowTexts = new string[rows];
+                try { _padWidth = Math.Max(Console.WindowWidth - 1, 1); }
+                catch { _padWidth = 120; }
+
+                // Запоминаем текущую строку и резервируем rows слотов + 1 строку прогресса
+                _topLine = Console.CursorTop;
+                for (int i = 0; i < rows + 1; i++)
+                    Console.WriteLine();
+            }
+
+            /// <summary>Выдаёт номер строки (слота) для потока, по кругу 0..rows-1.</summary>
+            public int TakeSlot() => Interlocked.Increment(ref _nextSlot) % _rows;
+
+            /// <summary>Обновляет текст строки слота и перерисовывает блок.</summary>
+            public void UpdateRow(int slot, string text)
+            {
+                if (slot < 0 || slot >= _rows) return;
+                lock (_sync)
+                {
+                    if (_finished) return;
+                    _rowTexts[slot] = text;
+                    RedrawOrFallback(text);
+                }
+            }
+
+            /// <summary>Обновляет строку прогресса и перерисовывает блок.</summary>
+            public void SetProgress(string text)
+            {
+                lock (_sync)
+                {
+                    if (_finished) return;
+                    _progress = text;
+                    RedrawOrFallback(text);
+                }
+            }
+
+            /// <summary>Завершает отрисовку: стирает блок, чтобы дальше итог выводился обычным способом.</summary>
+            public void Finish()
+            {
+                lock (_sync)
+                {
+                    if (_finished) return;
+                    _finished = true;
+                    if (!_supportsRedraw) return;
+                    try
+                    {
+                        Console.SetCursorPosition(0, _topLine);
+                        string blank = new(' ', _padWidth);
+                        for (int i = 0; i < _rows + 1; i++)
+                            Console.WriteLine(blank);
+                        Console.SetCursorPosition(0, _topLine);
+                    }
+                    catch { _supportsRedraw = false; }
+                }
+            }
+
+            /// <summary>Перерисовывает блок целиком; при невозможности (перенаправленный вывод) пишет строку обычным способом.</summary>
+            private void RedrawOrFallback(string newText)
+            {
+                if (!_supportsRedraw)
+                {
+                    Console.WriteLine(newText);
+                    return;
+                }
+                try
+                {
+                    Console.SetCursorPosition(0, _topLine);
+                    for (int i = 0; i < _rows; i++)
+                    {
+                        Console.Write((_rowTexts[i] ?? "").PadRight(_padWidth));
+                        Console.WriteLine();
+                    }
+                    Console.Write(_progress.PadRight(_padWidth));
+                }
+                catch
+                {
+                    _supportsRedraw = false;
+                    Console.WriteLine(newText);
+                }
+            }
+        }
+
         public KeywordCleanerService(
             HttpClient client,
             DeepSeekSettings deepSeekSettings,
@@ -95,8 +196,11 @@ namespace KeywordClusterizer
             PrepareOutputFiles(); // очищаем выходные файлы перед новым запуском, чтобы не смешивать со старыми данными
 
             var results = new PoolResults();
+            // Блок отображения: фиксированное число строк = числу потоков, обновляются по мере обработки
+            var display = new PoolProgressDisplay(maxConcurrency);
             await ProcessAllPoolsAsync(pools, systemPrompt, endpoint, skipDeepSeekFields,
-                apiKeyOverride, brandHandling, maxConcurrency, results);
+                apiKeyOverride, brandHandling, maxConcurrency, results, display, keywords.Count);
+            display.Finish(); // стираем блок статуса перед выводом итога
 
             SaveResults(results, queryTypeLabel);
             PrintSummary(results);
@@ -149,7 +253,8 @@ namespace KeywordClusterizer
         /// <summary>Запускает обработку всех пулов параллельно с ограничением по maxConcurrency.</summary>
         private async Task ProcessAllPoolsAsync(
             List<List<string>> pools, string systemPrompt, string? endpoint, bool skipDeepSeekFields,
-            string? apiKeyOverride, BrandHandling brandHandling, int maxConcurrency, PoolResults results)
+            string? apiKeyOverride, BrandHandling brandHandling, int maxConcurrency, PoolResults results,
+            PoolProgressDisplay display, int totalKeywords)
         {
             using var semaphore = new SemaphoreSlim(maxConcurrency);
             var originalAuth = _client.DefaultRequestHeaders.Authorization;
@@ -162,7 +267,8 @@ namespace KeywordClusterizer
                 await semaphore.WaitAsync();
                 try
                 {
-                    await ProcessPoolAsync(index, pool, systemPrompt, endpoint, skipDeepSeekFields, brandHandling, results, pools.Count);
+                    await ProcessPoolAsync(index, pool, systemPrompt, endpoint, skipDeepSeekFields,
+                        brandHandling, results, pools.Count, totalKeywords, display);
                 }
                 finally
                 {
@@ -190,9 +296,11 @@ namespace KeywordClusterizer
         private async Task ProcessPoolAsync(
             int poolIndex, List<string> poolKeywords, string systemPrompt,
             string? endpoint, bool skipDeepSeekFields, BrandHandling brandHandling,
-            PoolResults results, int totalPools)
+            PoolResults results, int totalPools, int totalKeywords, PoolProgressDisplay display)
         {
-            ConsoleUtils.Write($"\n[{poolIndex + 1}/{totalPools}] Отправка пула ({poolKeywords.Count} ключей)... ", ConsoleColor.Yellow);
+            // Закрепляем за потоком строку в блоке статуса и показываем "Отправка"
+            int slot = display.TakeSlot();
+            display.UpdateRow(slot, $"[{poolIndex + 1}/{totalPools}] Отправка пула ({poolKeywords.Count} ключей)...");
 
             string userMessage = string.Join("\n", poolKeywords);
             var (response, error) = await DeepSeekHelper.SendWithRetryAsync<CleanerResponse>(
@@ -202,7 +310,7 @@ namespace KeywordClusterizer
 
             if (response == null)
             {
-                FailPool(poolIndex, poolKeywords, error, results);
+                FailPool(slot, poolIndex, poolKeywords, error, results, totalKeywords, display);
                 return;
             }
 
@@ -219,21 +327,30 @@ namespace KeywordClusterizer
             AppendToFile(_cleanerSettings.OutputFailed, classification.Missed);
 
             results.AddProcessed(poolKeywords.Count);
-            LogPoolOutcome(classification, results.ProcessedCount);
+
+            // Обновляем строку потока результатом и строку общего прогресса
+            string outcome = $"[{poolIndex + 1}/{totalPools}] OK (clean: {classification.Cleaned.Count}, " +
+                             $"brand: {classification.Branded.Count}, discard: {classification.Discarded.Count})";
+            if (classification.Missed.Count > 0)
+                outcome += $" [missed: {classification.Missed.Count}]";
+            display.UpdateRow(slot, outcome);
+            display.SetProgress($"Прогресс: {results.ProcessedCount}/{totalKeywords} ключей");
         }
 
-        /// <summary>Помещает все ключи провалившегося пула в failed и печатает причину.</summary>
-        private void FailPool(int poolIndex, List<string> poolKeywords, ApiErrorType error, PoolResults results)
+        /// <summary>Помещает все ключи провалившегося пула в failed и обновляет строку статуса.</summary>
+        private void FailPool(int slot, int poolIndex, List<string> poolKeywords, ApiErrorType error,
+            PoolResults results, int totalKeywords, PoolProgressDisplay display)
         {
             string reason = error == ApiErrorType.Unauthorized
                 ? "неверный API ключ (401) — дальнейшая обработка бессмысленна"
                 : $"все попытки исчерпаны ({DeepSeekHelper.DescribeError(error)})";
 
-            ConsoleUtils.WriteLine($"\n[ОШИБКА] Пул {poolIndex + 1} — {reason}. Ключи сохранены в failed.txt.", ConsoleColor.Red);
-
             AddRange(results.Failed, poolKeywords);
             AppendToFile(_cleanerSettings.OutputFailed, poolKeywords); // дописываем сразу, чтобы не потерять при сбое
             results.AddProcessed(poolKeywords.Count);
+
+            display.UpdateRow(slot, $"[{poolIndex + 1}] ОШИБКА — {reason}");
+            display.SetProgress($"Прогресс: {results.ProcessedCount}/{totalKeywords} ключей");
         }
 
         private static void AddRange(ConcurrentBag<string> bag, IEnumerable<string> items)
@@ -317,18 +434,6 @@ namespace KeywordClusterizer
             }
 
             return new PoolClassification(cleaned, branded, discarded, missed);
-        }
-
-        /// <summary>Выводит итог обработки одного пула. Вывод синхронизирован, чтобы строки не перемешивались между потоками.</summary>
-        private static void LogPoolOutcome(PoolClassification c, int totalProcessed)
-        {
-            lock (typeof(Console))
-            {
-                ConsoleUtils.WriteLine($"OK (clean: {c.Cleaned.Count}, brand: {c.Branded.Count}, discard: {c.Discarded.Count})", ConsoleColor.Green);
-                Console.WriteLine($"  Прогресс: {totalProcessed} ключей");
-                if (c.Missed.Count > 0 || c.Branded.Count > 0)
-                    ConsoleUtils.WriteLine($"  [ВАЛИДАЦИЯ] пропущено AI: {c.Missed.Count}, брендов: {c.Branded.Count}", ConsoleColor.DarkYellow);
-            }
         }
 
         /// <summary>Разбивает список ключей на пулы указанного размера.</summary>
