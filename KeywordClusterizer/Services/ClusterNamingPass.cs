@@ -171,8 +171,12 @@ namespace KeywordClusterizer.Services
                 {
                     lock (_consoleLock)
                     {
+                        // Для сетевых ошибок явно указываем, что нейросеть не отвечает
+                        string reason = error == ApiErrorType.NetworkError
+                            ? "нейросеть не отвечает"
+                            : DeepSeekHelper.DescribeError(error);
                         ConsoleUtils.WriteLine(
-                            $"  [Naming] «{clusterName}»: ошибка AI ({DeepSeekHelper.DescribeError(error)}). Оставлено без изменений.",
+                            $"  [Naming] «{clusterName}»: {reason}. Оставлено без изменений.",
                             ConsoleColor.Yellow);
                     }
                 }

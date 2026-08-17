@@ -12,8 +12,8 @@ namespace KeywordClusterizer.Models
         /// <summary>Модель нейросети по умолчанию.</summary>
         public string DefaultModel { get; set; } = "deepseek-v4-pro";
 
-        /// <summary>Максимальное количество ключевых слов в одном пуле.</summary>
-        public int DefaultPoolSize { get; set; } = 1000;
+        /// <summary>Максимальное количество ключевых слов в одном пуле (батче). По умолчанию 100.</summary>
+        public int DefaultPoolSize { get; set; } = 100;
 
         /// <summary>Файл для записи чистых (релевантных) ключей.</summary>
         public string OutputCleaned { get; set; } = "cleaned.txt";

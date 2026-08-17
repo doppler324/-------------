@@ -1483,7 +1483,9 @@ namespace KeywordClusterizer
             Console.WriteLine($"\nЗагружено {clusters.Count} кластеров, {totalKeywords} ключей из '{inputPath}'.");
 
             // 4. HTTP клиент
-            using var client = new HttpClient() { Timeout = TimeSpan.FromMinutes(30) };
+            // Таймаут 60с на один запрос: если нейросеть «молчит» (не отвечает),
+            // программа не висит по 30 минут, а распознаёт недоступность как сетевую ошибку.
+            using var client = new HttpClient() { Timeout = TimeSpan.FromSeconds(60) };
             client.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Bearer", deepSeekSettings.ApiKey);
 

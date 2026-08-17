@@ -22,6 +22,9 @@ namespace KeywordClusterizer
         private readonly DeepSeekSettings _deepSeekSettings;
         private readonly CleanerSettings _cleanerSettings;
 
+        /// <summary>Блокировка для атомарной дописки результатов пула в файлы из разных потоков.</summary>
+        private static readonly object FileWriteLock = new();
+
         /// <summary>Результаты обработки всех пулов, собираемые многопоточно.</summary>
         private class PoolResults
         {
@@ -88,6 +91,8 @@ namespace KeywordClusterizer
             var pools = SplitIntoPools(keywords, _cleanerSettings.DefaultPoolSize);
             Console.WriteLine($"Пулов по {_cleanerSettings.DefaultPoolSize} ключей: {pools.Count}");
             Console.WriteLine($"Потоков: {maxConcurrency}");
+
+            PrepareOutputFiles(); // очищаем выходные файлы перед новым запуском, чтобы не смешивать со старыми данными
 
             var results = new PoolResults();
             await ProcessAllPoolsAsync(pools, systemPrompt, endpoint, skipDeepSeekFields,
@@ -207,12 +212,18 @@ namespace KeywordClusterizer
             AddRange(results.Discarded, classification.Discarded);
             AddRange(results.Failed, classification.Missed); // missed при SeparateFile идут сюда же, что и провалившиеся пулы
 
+            // Сразу после обработки пула дописываем результаты в файлы — защита от потери при сбое
+            AppendToFile(_cleanerSettings.OutputCleaned, classification.Cleaned);
+            AppendToFile(_cleanerSettings.OutputBranded, classification.Branded);
+            AppendToFile(_cleanerSettings.OutputDiscarded, classification.Discarded);
+            AppendToFile(_cleanerSettings.OutputFailed, classification.Missed);
+
             results.AddProcessed(poolKeywords.Count);
             LogPoolOutcome(classification, results.ProcessedCount);
         }
 
         /// <summary>Помещает все ключи провалившегося пула в failed и печатает причину.</summary>
-        private static void FailPool(int poolIndex, List<string> poolKeywords, ApiErrorType error, PoolResults results)
+        private void FailPool(int poolIndex, List<string> poolKeywords, ApiErrorType error, PoolResults results)
         {
             string reason = error == ApiErrorType.Unauthorized
                 ? "неверный API ключ (401) — дальнейшая обработка бессмысленна"
@@ -221,6 +232,7 @@ namespace KeywordClusterizer
             ConsoleUtils.WriteLine($"\n[ОШИБКА] Пул {poolIndex + 1} — {reason}. Ключи сохранены в failed.txt.", ConsoleColor.Red);
 
             AddRange(results.Failed, poolKeywords);
+            AppendToFile(_cleanerSettings.OutputFailed, poolKeywords); // дописываем сразу, чтобы не потерять при сбое
             results.AddProcessed(poolKeywords.Count);
         }
 
@@ -326,6 +338,47 @@ namespace KeywordClusterizer
             for (int i = 0; i < keywords.Count; i += poolSize)
                 pools.Add(keywords.Skip(i).Take(poolSize).ToList());
             return pools;
+        }
+
+        /// <summary>
+        /// Очищает выходные файлы результатов перед началом чистки.
+        /// Нужно, чтобы результаты нового запуска не смешивались с данными от предыдущих.
+        /// </summary>
+        private void PrepareOutputFiles()
+        {
+            try
+            {
+                File.WriteAllLines(_cleanerSettings.OutputCleaned, Array.Empty<string>());
+                File.WriteAllLines(_cleanerSettings.OutputBranded, Array.Empty<string>());
+                File.WriteAllLines(_cleanerSettings.OutputDiscarded, Array.Empty<string>());
+                File.WriteAllLines(_cleanerSettings.OutputFailed, Array.Empty<string>());
+            }
+            catch (Exception ex)
+            {
+                ConsoleUtils.WriteLine($"[ОШИБКА] Не удалось подготовить файлы результатов: {ex.Message}", ConsoleColor.Red);
+            }
+        }
+
+        /// <summary>
+        /// Дописывает список ключей в конец файла под блокировкой (вызывается из каждого потока сразу после обработки пула).
+        /// Защита от потери результатов при сбое: обработанные пулы уже лежат в файлах до завершения всей чистки.
+        /// </summary>
+        private static void AppendToFile(string path, IEnumerable<string> items)
+        {
+            var list = items as List<string> ?? items.ToList();
+            if (list.Count == 0) return;
+
+            lock (FileWriteLock)
+            {
+                try
+                {
+                    File.AppendAllLines(path, list);
+                }
+                catch (Exception ex)
+                {
+                    ConsoleUtils.WriteLine($"[ОШИБКА] Не удалось дописать {path}: {ex.Message}", ConsoleColor.Red);
+                }
+            }
         }
 
         /// <summary>Сохраняет один список ключей в файл, печатая результат операции.</summary>

@@ -2,6 +2,7 @@ using System;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -203,11 +204,15 @@ namespace KeywordClusterizer
                     }
                     catch (TaskCanceledException)
                     {
-                        return (null, ApiErrorType.NetworkError); // таймаут запроса
+                        // Срабатывает по истечении HttpClient.Timeout — нейросеть не отвечает в срок
+                        ConsoleUtils.WriteLine("  [API] ✗ нейросеть не отвечает (таймаут ожидания ответа).", ConsoleColor.Yellow);
+                        return (null, ApiErrorType.NetworkError);
                     }
-                    catch (HttpRequestException)
+                    catch (HttpRequestException ex)
                     {
-                        return (null, ApiErrorType.NetworkError); // обрыв соединения, DNS и т.п.
+                        // Сетевые проблемы: нет соединения, DNS, обрыв и т.п.
+                        ConsoleUtils.WriteLine($"  [API] ✗ нейросеть недоступна: {DescribeNetworkError(ex)}.", ConsoleColor.Yellow);
+                        return (null, ApiErrorType.NetworkError);
                     }
                 }
 
@@ -215,7 +220,7 @@ namespace KeywordClusterizer
 
                 if (!response.IsSuccessStatusCode)
                 {
-                    ConsoleUtils.WriteLine($"\n[ОШИБКА API] Код: {response.StatusCode}", ConsoleColor.Red);
+                    ConsoleUtils.WriteLine($"\n[ОШИБКА API] Код: {response.StatusCode} ({DescribeError(MapStatusToError(response.StatusCode))})", ConsoleColor.Red);
                     return (null, MapStatusToError(response.StatusCode));
                 }
 
@@ -230,9 +235,39 @@ namespace KeywordClusterizer
             }
             catch (Exception ex)
             {
-                ConsoleUtils.WriteLine($"\n[ОШИБКА] Запрос к API: {ex.GetType().Name}", ConsoleColor.Yellow);
+                ConsoleUtils.WriteLine($"\n[ОШИБКА] Запрос к API: {DescribeNetworkError(ex)}", ConsoleColor.Yellow);
                 return (null, ApiErrorType.NetworkError);
             }
+        }
+
+        /// <summary>
+        /// Преобразует исключение HTTP/сетевого уровня в читаемое описание причины,
+        /// чтобы было понятно, что именно мешает запросу (нет соединения, DNS, обрыв, таймаут).
+        /// </summary>
+        private static string DescribeNetworkError(Exception ex)
+        {
+            // Ищем в цепочке InnerException сетевое исключение (SocketException и т.п.)
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is SocketException sock)
+                {
+                    return sock.SocketErrorCode switch
+                    {
+                        SocketError.ConnectionRefused => "нет соединения с сервером (соединение отклонено)",
+                        SocketError.HostNotFound => "не удалось найти сервер (DNS)",
+                        SocketError.ConnectionReset => "соединение сброшено сервером",
+                        SocketError.TimedOut => "таймаут сети",
+                        SocketError.NetworkUnreachable => "сеть недоступна",
+                        SocketError.HostUnreachable => "сервер недоступен",
+                        _ => $"сетевая ошибка ({sock.SocketErrorCode})"
+                    };
+                }
+            }
+
+            if (ex is TaskCanceledException)
+                return "таймаут ожидания ответа";
+
+            return ex.GetType().Name;
         }
 
         /// <summary>
