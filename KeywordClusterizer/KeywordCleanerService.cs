@@ -39,91 +39,99 @@ namespace KeywordClusterizer
         }
 
         /// <summary>
-        /// Отрисовка статуса пулов в консоли: всегда показывает ровно maxConcurrency строк (по одной на поток)
-        /// плюс строку прогресса. Строки перезаписываются при изменении, а не накапливаются.
+        /// Отрисовка статуса пулов в консоли: в живом терминале показывает ровно maxConcurrency строк
+        /// (по одной на поток) плюс строку прогресса, перезаписываемых на месте. При перенаправленном
+        /// выводе (лог, панель IDE) выводит только строки-результаты построчно, без мусора.
         /// </summary>
         private sealed class PoolProgressDisplay
         {
             private readonly int _rows;          // число строк = числу потоков
             private readonly string[] _rowTexts; // текущий текст каждой строки
-            private readonly int _topLine;       // строка консоли, с которой начинается блок
             private readonly object _sync = new();
             private readonly int _padWidth;      // ширина очистки строки
             private int _nextSlot;               // счётчик для выдачи слотов по кругу
             private string _progress = "";
             private bool _finished;
-            private bool _supportsRedraw = true; // false при перенаправленном выводе — включается fallback
+            private readonly bool _live;         // true — живой терминал (можно перерисовывать)
+            private bool _redrawFailed;          // true после первой ошибки перерисовки
 
             public PoolProgressDisplay(int rows)
             {
                 _rows = rows;
                 _rowTexts = new string[rows];
+                _live = !Console.IsOutputRedirected;
                 try { _padWidth = Math.Max(Console.WindowWidth - 1, 1); }
                 catch { _padWidth = 120; }
 
-                // Запоминаем текущую строку и резервируем rows слотов + 1 строку прогресса
-                _topLine = Console.CursorTop;
-                for (int i = 0; i < rows + 1; i++)
-                    Console.WriteLine();
+                // В живом терминале резервируем rows слотов + 1 строку прогресса
+                if (_live)
+                {
+                    for (int i = 0; i < rows + 1; i++)
+                        Console.WriteLine();
+                }
             }
 
             /// <summary>Выдаёт номер строки (слота) для потока, по кругу 0..rows-1.</summary>
             public int TakeSlot() => Interlocked.Increment(ref _nextSlot) % _rows;
 
-            /// <summary>Обновляет текст строки слота и перерисовывает блок.</summary>
-            public void UpdateRow(int slot, string text)
+            /// <summary>
+            /// Обновляет текст строки слота. В живом терминале перерисовывает блок.
+            /// При перенаправленном выводе печатает строку построчно, только если printWhenRedirected.
+            /// </summary>
+            public void UpdateRow(int slot, string text, bool printWhenRedirected = false)
             {
                 if (slot < 0 || slot >= _rows) return;
                 lock (_sync)
                 {
                     if (_finished) return;
                     _rowTexts[slot] = text;
-                    RedrawOrFallback(text);
+                    if (_live)
+                        Redraw();
+                    else if (printWhenRedirected)
+                        Console.WriteLine(text);
                 }
             }
 
-            /// <summary>Обновляет строку прогресса и перерисовывает блок.</summary>
+            /// <summary>Обновляет строку прогресса (в перенаправленном режиме не печатается).</summary>
             public void SetProgress(string text)
             {
                 lock (_sync)
                 {
                     if (_finished) return;
                     _progress = text;
-                    RedrawOrFallback(text);
+                    if (_live)
+                        Redraw();
                 }
             }
 
-            /// <summary>Завершает отрисовку: стирает блок, чтобы дальше итог выводился обычным способом.</summary>
+            /// <summary>Завершает отрисовку: в живом терминале стирает блок, дальше итог выводится обычным способом.</summary>
             public void Finish()
             {
                 lock (_sync)
                 {
                     if (_finished) return;
                     _finished = true;
-                    if (!_supportsRedraw) return;
+                    if (!_live || _redrawFailed) return;
                     try
                     {
-                        Console.SetCursorPosition(0, _topLine);
+                        Console.SetCursorPosition(0, Console.CursorTop - (_rows + 1));
                         string blank = new(' ', _padWidth);
                         for (int i = 0; i < _rows + 1; i++)
                             Console.WriteLine(blank);
-                        Console.SetCursorPosition(0, _topLine);
+                        Console.SetCursorPosition(0, Console.CursorTop - (_rows + 1));
                     }
-                    catch { _supportsRedraw = false; }
+                    catch { _redrawFailed = true; }
                 }
             }
 
-            /// <summary>Перерисовывает блок целиком; при невозможности (перенаправленный вывод) пишет строку обычным способом.</summary>
-            private void RedrawOrFallback(string newText)
+            /// <summary>Перерисовывает весь блок статуса заново на месте.</summary>
+            private void Redraw()
             {
-                if (!_supportsRedraw)
-                {
-                    Console.WriteLine(newText);
-                    return;
-                }
+                if (_redrawFailed) return;
                 try
                 {
-                    Console.SetCursorPosition(0, _topLine);
+                    int top = Console.CursorTop - (_rows + 1);
+                    Console.SetCursorPosition(0, top);
                     for (int i = 0; i < _rows; i++)
                     {
                         Console.Write((_rowTexts[i] ?? "").PadRight(_padWidth));
@@ -131,11 +139,7 @@ namespace KeywordClusterizer
                     }
                     Console.Write(_progress.PadRight(_padWidth));
                 }
-                catch
-                {
-                    _supportsRedraw = false;
-                    Console.WriteLine(newText);
-                }
+                catch { _redrawFailed = true; }
             }
         }
 
@@ -299,6 +303,7 @@ namespace KeywordClusterizer
             PoolResults results, int totalPools, int totalKeywords, PoolProgressDisplay display)
         {
             // Закрепляем за потоком строку в блоке статуса и показываем "Отправка"
+            // (в перенаправленном режиме строку "Отправка" не печатаем, чтобы не засорять лог)
             int slot = display.TakeSlot();
             display.UpdateRow(slot, $"[{poolIndex + 1}/{totalPools}] Отправка пула ({poolKeywords.Count} ключей)...");
 
@@ -333,7 +338,7 @@ namespace KeywordClusterizer
                              $"brand: {classification.Branded.Count}, discard: {classification.Discarded.Count})";
             if (classification.Missed.Count > 0)
                 outcome += $" [missed: {classification.Missed.Count}]";
-            display.UpdateRow(slot, outcome);
+            display.UpdateRow(slot, outcome, printWhenRedirected: true);
             display.SetProgress($"Прогресс: {results.ProcessedCount}/{totalKeywords} ключей");
         }
 
@@ -349,7 +354,7 @@ namespace KeywordClusterizer
             AppendToFile(_cleanerSettings.OutputFailed, poolKeywords); // дописываем сразу, чтобы не потерять при сбое
             results.AddProcessed(poolKeywords.Count);
 
-            display.UpdateRow(slot, $"[{poolIndex + 1}] ОШИБКА — {reason}");
+            display.UpdateRow(slot, $"[{poolIndex + 1}] ОШИБКА — {reason}", printWhenRedirected: true);
             display.SetProgress($"Прогресс: {results.ProcessedCount}/{totalKeywords} ключей");
         }
 
